@@ -1,0 +1,21 @@
+# Core ML / vision (P-1, P0)
+ultralytics>=8.3.0
+opencv-python>=4.10
+numpy>=1.26
+pyyaml>=6.0
+lap>=0.5.12            # linear assignment used by Ultralytics trackers (BoT-SORT / ByteTrack)
+scikit-learn>=1.5        # D1 posture evaluation (P1)
+matplotlib>=3.8          # evaluation plots (P2)
+
+# Dashboard (P3)
+fastapi>=0.115
+uvicorn>=0.30
+websockets>=12
+
+# Development
+pytest>=8                # python -m pytest -q
+httpx>=0.27
+
+# torch / torchvision come in as Ultralytics dependencies (CPU build by default).
+# With an NVIDIA GPU, install the CUDA build first, e.g.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124

@@ -1,0 +1,47 @@
+# Reasoner settings (spec §9.1, §10)
+baseline:
+  calib_s: 180              # first 3–5 min of the exam = each seat's "normal" (use ~30 for webcam demos)
+  min_samples: 30           # a seat needs this many frames before its baseline can freeze
+  settle_s: 10              # skip each seat's first seconds (sitting down, looking at the screen after starting)
+  sigma_cap_percentile: 75  # cap each seat's spread at the hall's 75th percentile (anti-gaming, §9.1)
+  sigma_floor:              # never treat a student as more "still" than this
+    yaw: 4.0
+    pitch: 4.0
+    lean_x: 0.05
+    shoulder_tilt: 2.0
+    wrist_drop: 0.12
+    hand_face: 0.12
+
+risk:
+  half_life_s: 180          # old behaviour fades (λ from half-life)
+  amber: 0.40
+  red: 0.75
+  red_on_weight: 0.60       # any single event with weight ≥ this and confidence > 0.8 goes red
+  grey_obs: 0.30            # observability below this …
+  grey_after_s: 60          # … for this long = "coverage gap"
+  reasons_window_s: 180     # reasons listed on an alert come from the last 3 min
+
+sag:                        # Seat Attention Graph (spec §8)
+  start_z: 2.5              # a glance starts at |yaw_dev_z| > 2.5 and |yaw_dev| > 12°,
+  start_deg: 12.0
+  end_z: 1.2                # ends when back below 1.2 (hysteresis) …
+  end_frac: 0.4             # … or back to within 40% of the glance's peak deviation
+  max_pitch_up: 10.0        # desk-level only: head not raised > 10° above its recent level
+  max_profile_base: 0.2     # seats seen side-on > 20% of the baseline: yaw not measurable, no edges
+  min_s: 0.6                # glance length that becomes an edge
+  max_s: 4.0                # longer looks are LONG_SIDE_LOOK, not glances
+  reach: 1.6                # target = nearest seat on that side within 1.6 seat spacings
+  window_s: 120             # copying / mutual are judged over the last 2 min
+  copy_min: 3               # COPYING_ONE_WAY: >= 3 glances i -> j …
+  copy_max_back: 1          # … while j looked back at most once
+  mutual_lag_s: 5.0         # MUTUAL_ORIENTATION: i -> j and j -> i starting within 5 s …
+  mutual_min: 2             # … at least twice
+  hub_window_s: 600         # ATTENTION_HUB: >= 3 different seats toward one seat in 10 min
+  hub_sources: 3
+  cooldown_s: 60
+  copy_weight: 0.35          # same as SIDE_GLANCE_REPEAT, which it replaces: SAG names the neighbour, adds no extra risk
+  mutual_weight: 0.45
+
+despike_s: 1.0                # causal median on head angles: removes keypoint glitches (real jitter: 9.8 -> 0.75 false alerts/student-h)
+
+rules_file: rules/rules.yaml

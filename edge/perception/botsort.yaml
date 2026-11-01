@@ -1,0 +1,13 @@
+# BoT-SORT for exam halls (spec §6.3). Based on Ultralytics' default botsort.yaml.
+tracker_type: botsort
+track_high_thresh: 0.25  # first-association confidence threshold
+track_low_thresh: 0.1    # second-association threshold (recovers low-conf, partly occluded students)
+new_track_thresh: 0.25   # min confidence to start a new track
+track_buffer: 90         # frames a lost track is kept (~3 s at 30 fps; students are mostly stationary)
+match_thresh: 0.8
+fuse_score: True
+gmc_method: none         # fixed CCTV / webcam -> no camera-motion compensation (saves CPU)
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False         # privacy: no appearance embeddings
+model: auto

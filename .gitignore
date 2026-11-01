@@ -1,0 +1,43 @@
+# Data and media — never commit (datasets live in C:\nirikshak_data)
+data/
+*.mp4
+*.avi
+*.mov
+*.zip
+*.jpg
+*.jpeg
+*.png
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated (recordings, feature logs, seat maps, reports, databases)
+outputs/
+runs/
+models/*.pt
+*.pt
+*.db
+*.sqlite
+*.sqlite3
+features_*.csv
+
+# Personal — never commit
+CLAUDE.md
+.claude/
+.cph/
+.env
+.env.*
+kaggle.json
+*.key
+*secret*
+*token*
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

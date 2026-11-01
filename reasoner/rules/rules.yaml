@@ -1,0 +1,74 @@
+# SAGA behaviour rules (spec §9.2). Edit freely — no programming needed.
+#
+#   when             condition checked every frame for one seat (see names below)
+#   end_when         optional hysteresis: once started, the episode lasts until this is true
+#   min_duration_s   condition must hold this long (short dropouts < 0.4 s are bridged) = one "episode"
+#   max_duration_s   optional: only episodes at most this long count (e.g. glances, not long looks)
+#   count, window_s  fire when >= count episodes happen within window_s (omit count = fire on each episode)
+#   same_direction   optional: only count episodes toward the same side (repeated looks at ONE neighbour)
+#   cooldown_s       after firing, wait this long before the same rule can fire again for that seat
+#   weight           how much one firing adds to the seat's risk (× observability; amber at 0.4, red at 0.75)
+#   message          shown to the invigilator; {count} {window_s} {duration} {direction} {seat}
+#
+# Names you can use in `when` / `end_when`:
+#   raw:      yaw pitch lean_x shoulder_tilt wrist_drop wrists_vis hand_face head_px kp_conf
+#   z-scores: yaw_z pitch_z lean_x_z shoulder_tilt_z wrist_drop_z hand_face_z
+#             (deviation from THIS student's own calibration baseline, in robust standard deviations)
+#   medians:  yaw_med pitch_med … (the student's baseline value)
+#   recent:   yaw_dev pitch_dev (minus the student's last-20 s median) and yaw_dev_z pitch_dev_z;
+#             yaw_dev_long pitch_dev_long (+ _z) the same against the last 2 minutes
+#             end_when only: yaw_dev_peak (largest |yaw_dev| in this episode), yaw_dev_ref (yaw minus
+#             the head direction just before the episode started)
+#   facing:   facing ('camera' | 'away' | 'profile' | 'unknown'), away_base / profile_base (share of
+#             baseline frames facing away / seen side-on), wrists_vis_base (usual number of visible wrists)
+# Head angles are in image terms: yaw > 0 = toward image-right, pitch < 0 = looking down.
+
+- id: SIDE_GLANCE_REPEAT        # quick turns toward one side and back, at desk level (peeking at a neighbour's paper)
+  when: abs(yaw_dev_z) > 2.5 and abs(yaw_dev) > 12 and pitch_dev < 10 and profile_base < 0.2
+  end_when: abs(yaw_dev_z) < 1.2 or abs(yaw_dev) < 0.4 * yaw_dev_peak   # head is back (most of the way)
+  min_duration_s: 0.6
+  max_duration_s: 4
+  count: 3
+  window_s: 120
+  same_direction: true
+  cooldown_s: 30
+  weight: 0.35                  # one burst is logged; repeated bursts (6+ glances) reach amber
+  message: "Repeated sideward glances {direction} ({count}x in {window_s}s)"
+
+- id: LONG_SIDE_LOOK             # vs the last 2 min, so slow posture changes are not "looks"
+  # unusual vs the frozen baseline (anti-gaming) AND vs the last 2 min (not a posture change)
+  when: abs(yaw_z) > 3.5 and abs(yaw - yaw_med) > 25 and abs(yaw_dev_long) > 25 and profile_base < 0.2
+  end_when: abs(yaw_dev_ref) < 12         # the head came back to where it was before the look
+  min_duration_s: 5
+  max_duration_s: 30            # a look returns; turning and STAYING turned is a posture change, not a look
+  cooldown_s: 30
+  weight: 0.35                  # one long look alone stays green; with other evidence -> amber
+  message: "Looked {direction} continuously for {duration}s"
+
+- id: HANDS_BELOW_DESK
+  when: pitch_z < -2 and (wrist_drop_z > 2 or (wrists_vis == 0 and wrists_vis_base >= 1))
+  min_duration_s: 6
+  cooldown_s: 60
+  weight: 0.55
+  message: "Looking down with hands below desk for {duration}s"
+
+- id: TURNED_AROUND
+  when: facing == 'away' and away_base < 0.2
+  min_duration_s: 1.5
+  count: 2
+  window_s: 120
+  cooldown_s: 60
+  weight: 0.60
+  message: "Turned around toward the back {count}x in {window_s}s"
+
+- id: HAND_NEAR_FACE             # hand_face only counts a wrist raised to head level
+  # unusual for this student — or no baseline at all (never raised a hand while calibrating: z is NaN)
+  when: hand_face < 0.7 and not (hand_face_z >= -2)
+  min_duration_s: 5
+  cooldown_s: 60
+  weight: 0.35
+  message: "Hand held near face/ear for {duration}s"
+
+# Coming later:
+#   P4  MUTUAL_ORIENTATION, one-way copying toward a named neighbour (Seat Attention Graph)
+#   P5  OBJECT_IN_USE, CHIT_TRANSFER (hand-object interaction)

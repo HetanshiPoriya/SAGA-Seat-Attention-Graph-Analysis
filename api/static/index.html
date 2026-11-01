@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAGA Hall Monitor</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #677189; --line: #e2e6ee;
+    --green: #2f9e5b; --amber: #e08a00; --red: #d23b3b; --grey: #8a919e; --calib: #c9ced8;
+    --edge: #e8700a; --accent: #2b5fd9; --chip: #eef2fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11151c; --panel: #1a202b; --ink: #e7ebf3; --muted: #97a1b6; --line: #2a3242;
+            --calib: #3a4354; --chip: #243049; --accent: #6f98ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 12px 16px;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; letter-spacing: .2px; }
+  .pill { padding: 3px 10px; border-radius: 999px; background: var(--chip); color: var(--ink); font-size: 12.5px; }
+  .pill.monitoring { background: color-mix(in srgb, var(--green) 18%, transparent); }
+  .pill.calibrating { background: color-mix(in srgb, var(--amber) 20%, transparent); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--grey); display: inline-block; margin-right: 6px; }
+  .dot.on { background: var(--green); }
+  .spacer { flex: 1; }
+  .meta { color: var(--muted); font-size: 12.5px; }
+  main { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); gap: 16px; padding: 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 10px; }
+  #map { width: 100%; height: auto; display: block; }
+  .seat rect { stroke-width: 2; cursor: pointer; }
+  .seat text { pointer-events: none; }
+  .seat.sel rect { stroke: var(--accent) !important; stroke-width: 4; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; vertical-align: -2px; margin-right: 5px; }
+  #alerts { display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow: auto; }
+  .alert { border: 1px solid var(--line); border-left: 5px solid var(--amber); border-radius: 10px; padding: 10px 12px; }
+  .alert.red { border-left-color: var(--red); }
+  .alert .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .alert b { font-size: 15px; }
+  .alert ul { margin: 6px 0 8px 18px; padding: 0; }
+  .alert .btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+           padding: 5px 10px; border-radius: 8px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .verdict { font-size: 12.5px; color: var(--muted); }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); margin-right: 4px;
+          cursor: pointer; font-size: 12.5px; }
+  .empty { color: var(--muted); padding: 8px 0; }
+  #detail { margin-top: 16px; }
+  #spark { width: 100%; height: 150px; display: block; }
+  .events { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
+  .events li { padding: 4px 0; border-top: 1px solid var(--line); }
+  .muted { color: var(--muted); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SAGA · Exam hall</h1>
+  <span id="phase" class="pill">connecting…</span>
+  <span class="meta" id="session"></span>
+  <span class="spacer"></span>
+  <span class="meta" id="health"></span>
+  <span class="meta"><span id="conn" class="dot"></span><span id="connText">offline</span></span>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>Hall map <span class="muted" style="text-transform:none;letter-spacing:0">— as seen from the camera, front row at the top</span></h2>
+      <svg id="map" viewBox="0 0 1000 560" role="img" aria-label="Seat map">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--edge)"></path>
+          </marker>
+        </defs>
+        <g id="seats"></g><g id="edges"></g>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--green)"></i>normal</span>
+        <span><i class="sw" style="background:var(--amber)"></i>watch</span>
+        <span><i class="sw" style="background:var(--red)"></i>review now</span>
+        <span><i class="sw" style="background:var(--grey)"></i>coverage gap</span>
+        <span><i class="sw" style="background:var(--calib)"></i>learning baseline</span>
+        <span><i class="sw" style="background:var(--edge)"></i>arrow = repeated looks toward a desk (last 2 min)</span>
+      </div>
+    </div>
+
+    <div class="card" id="detail">
+      <h2 id="detailTitle">Seat timeline — click a seat</h2>
+      <svg id="spark" viewBox="0 0 600 150" preserveAspectRatio="none"></svg>
+      <div class="muted" id="detailLegend" style="font-size:12.5px"></div>
+      <ul class="events" id="seatEvents"></ul>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Observed behaviour — for review</h2>
+    <div id="alerts"><div class="empty">No alerts yet.</div></div>
+    <div class="note">Alerts describe what the camera observed. They are not verdicts — the invigilator decides.
+      Feedback (confirm / dismiss / unsure) is stored to recalibrate the rules.</div>
+  </section>
+</main>
+
+<script>
+const LEVEL = { green: "var(--green)", amber: "var(--amber)", red: "var(--red)", grey: "var(--grey)",
+                calibrating: "var(--calib)" };
+const W = 1000, H = 560, PAD = 70;
+let state = null, selected = null;
+
+function fmtT(t) { if (t == null) return "–"; const m = Math.floor(t / 60), s = Math.floor(t % 60);
+  return `${m}:${String(s).padStart(2, "0")}`; }
+function el(tag, attrs = {}, text) { const ns = ["svg","g","rect","text","line","path","polyline","polygon"].includes(tag)
+  ? document.createElementNS("http://www.w3.org/2000/svg", tag) : document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) ns.setAttribute(k, v); if (text != null) ns.textContent = text; return ns; }
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+function seatPos(s) { return [PAD + s.x * (W - 2 * PAD), PAD + s.y * (H - 2 * PAD)]; }
+function seatSize() { const n = Math.max(1, state.layout.length); const cols = Math.max(...state.layout.map(s => s.col + 1), 1);
+  return Math.min(120, (W - 2 * PAD) / Math.max(cols, Math.sqrt(n)) * 0.58); }
+
+function drawMap() {
+  const seatsG = document.getElementById("seats"), edgesG = document.getElementById("edges");
+  seatsG.replaceChildren(); edgesG.replaceChildren();
+  if (!state.layout.length) { seatsG.append(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "var(--muted)" },
+    "Waiting for the seat map…")); return; }
+  const size = seatSize(), pos = Object.fromEntries(state.layout.map(s => [s.label, seatPos(s)]));
+  for (const e of state.edges) {
+    const a = pos[e.src], b = pos[e.dst]; if (!a || !b) continue;
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1, nx = -dy / L * 9, ny = dx / L * 9;
+    const f = Math.min(0.45, (size * 0.55) / L);  // start/end just outside the seat boxes
+    const sx = a[0] + dx * f + nx, sy = a[1] + dy * f + ny, ex = a[0] + dx * (1 - f) + nx, ey = a[1] + dy * (1 - f) + ny;
+    edgesG.append(el("line", { x1: sx, y1: sy, x2: ex, y2: ey, stroke: "var(--edge)", "stroke-width": Math.min(2 + e.n * 1.5, 12),
+      "stroke-linecap": "round", "marker-end": "url(#arrow)", opacity: 0.85 }));
+    edgesG.append(el("text", { x: (sx + ex) / 2 + nx, y: (sy + ey) / 2 + ny - 4, "text-anchor": "middle", "font-size": 15,
+      fill: "var(--edge)", "font-weight": 700 }, `${e.n}×`));
+  }
+  for (const s of state.layout) {
+    const st = state.seats[s.label] || {}, [x, y] = pos[s.label];
+    const g = el("g", { class: "seat" + (selected === s.label ? " sel" : ""), tabindex: 0 });
+    const fill = LEVEL[st.level] || LEVEL.calibrating;
+    g.append(el("rect", { x: x - size / 2, y: y - size * 0.36, width: size, height: size * 0.72, rx: 12,
+      fill, "fill-opacity": st.present ? 0.85 : 0.35, stroke: fill, "stroke-dasharray": st.level === "calibrating" ? "6 5" : "" }));
+    g.append(el("text", { x, y: y + 2, "text-anchor": "middle", "font-size": Math.max(16, size * 0.24), "font-weight": 700,
+      fill: "#10151f" }, s.label));
+    const sub = st.level === "calibrating" ? "learning" : `risk ${(st.risk ?? 0).toFixed(2)}`;
+    g.append(el("text", { x, y: y + size * 0.22, "text-anchor": "middle", "font-size": Math.max(11, size * 0.12), fill: "#10151f" }, sub));
+    g.addEventListener("click", () => selectSeat(s.label));
+    g.addEventListener("keydown", ev => { if (ev.key === "Enter") selectSeat(s.label); });
+    seatsG.append(g);
+  }
+}
+
+function drawAlerts() {
+  const box = document.getElementById("alerts");
+  if (!state.alerts.length) { box.innerHTML = '<div class="empty">No alerts yet.</div>'; return; }
+  box.innerHTML = state.alerts.map(a => `
+    <div class="alert ${a.level}">
+      <div class="top"><b>Seat ${esc(a.seat)} · ${a.level === "red" ? "Review now" : "Watch"}</b>
+        <span class="muted">${fmtT(a.t)} · risk ${a.risk.toFixed(2)} · visibility ${(a.obs ?? 0).toFixed(2)}</span></div>
+      <ul>${a.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
+      ${a.related.length ? `<div style="margin-bottom:8px">Related seats: ${a.related.map(r => `<span class="chip" data-seat="${esc(r)}">${esc(r)}</span>`).join("")}</div>` : ""}
+      ${a.verdict ? `<div class="verdict">Your feedback: <b>${esc(a.verdict)}</b></div>` : `
+      <div class="btns">
+        <button data-id="${a.id}" data-v="confirm">Confirm</button>
+        <button data-id="${a.id}" data-v="dismiss">Dismiss</button>
+        <button data-id="${a.id}" data-v="unsure">Unsure</button>
+        <button data-seat="${esc(a.seat)}">Show seat</button>
+      </div>`}
+    </div>`).join("");
+  box.querySelectorAll("button[data-v]").forEach(b => b.onclick = () => sendFeedback(b.dataset.id, b.dataset.v));
+  box.querySelectorAll("[data-seat]").forEach(b => b.onclick = () => selectSeat(b.dataset.seat));
+}
+
+async function sendFeedback(id, verdict) {
+  const r = await fetch(`/api/alerts/${id}/feedback`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ verdict }) });
+  if (!r.ok) alert("Could not save feedback");
+}
+
+function drawHeader() {
+  const p = document.getElementById("phase"), st = state.status;
+  p.className = "pill " + st.phase;
+  p.textContent = st.phase === "calibrating" ? `Learning normal behaviour… ${st.calib_left_s != null ? Math.ceil(st.calib_left_s) + " s" : ""}`
+                                             : "Monitoring";
+  document.getElementById("session").textContent = `${state.meta.name} · ${state.meta.mode}`;
+  const h = state.health;
+  const seen = Object.values(state.seats).filter(s => s.present).length;
+  document.getElementById("health").textContent =
+    `t ${fmtT(h.t)} · ${h.fps != null ? h.fps + " fps · " : ""}${seen}/${state.layout.length} seats visible`;
+}
+
+function selectSeat(label) { selected = label; drawMap(); loadTimeline(); }
+
+async function loadTimeline() {
+  if (!selected) return;
+  const r = await fetch(`/api/seats/${encodeURIComponent(selected)}/timeline`); if (!r.ok) return;
+  const d = await r.json(), svg = document.getElementById("spark"); svg.replaceChildren();
+  document.getElementById("detailTitle").textContent = `Seat ${selected} — head direction, last 3 min`;
+  const n = d.t.length; if (n < 2) { document.getElementById("detailLegend").textContent = "No data yet."; return; }
+  const t0 = d.t[0], t1 = d.t[n - 1], X = t => (t - t0) / Math.max(t1 - t0, 1) * 600, Y = v => 75 - v * 1.1;
+  if (d.baseline) {
+    const b = d.baseline, top = Y(b.yaw_med + 2.5 * b.yaw_sigma), bot = Y(b.yaw_med - 2.5 * b.yaw_sigma);
+    svg.append(el("rect", { x: 0, y: top, width: 600, height: Math.max(bot - top, 1), fill: "var(--green)", opacity: 0.15 }));
+    svg.append(el("line", { x1: 0, x2: 600, y1: Y(b.yaw_med), y2: Y(b.yaw_med), stroke: "var(--green)", "stroke-dasharray": "4 4" }));
+  }
+  svg.append(el("line", { x1: 0, x2: 600, y1: 75, y2: 75, stroke: "var(--line)" }));
+  const pts = d.t.map((t, i) => d.yaw[i] == null ? null : `${X(t).toFixed(1)},${Y(d.yaw[i]).toFixed(1)}`).filter(Boolean);
+  svg.append(el("polyline", { points: pts.join(" "), fill: "none", stroke: "var(--accent)", "stroke-width": 2 }));
+  for (const e of d.events) if (e.t >= t0) svg.append(el("line", { x1: X(e.t), x2: X(e.t), y1: 0, y2: 150, stroke: "var(--edge)", "stroke-width": 2 }));
+  document.getElementById("detailLegend").innerHTML =
+    `blue = head turn (up = toward the right of the camera view) · green band = this student's own normal range${d.baseline ? "" : " (still learning)"} · orange = event`;
+  document.getElementById("seatEvents").innerHTML = d.events.slice(0, 8).map(e =>
+    `<li><b>${fmtT(e.t)}</b> ${esc(e.message)}</li>`).join("") || '<li class="muted">No events for this seat.</li>';
+}
+
+let alertsKey = "";
+function render() {
+  drawHeader();
+  drawMap();
+  const key = state.alerts.map(a => a.id + (a.verdict || "")).join();
+  if (key !== alertsKey) { alertsKey = key; drawAlerts(); }  // only when alerts change: keeps buttons clickable
+}
+
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onopen = () => { document.getElementById("conn").className = "dot on"; document.getElementById("connText").textContent = "live"; };
+  ws.onmessage = ev => { state = JSON.parse(ev.data); render(); };
+  ws.onclose = () => { document.getElementById("conn").className = "dot"; document.getElementById("connText").textContent = "reconnecting…";
+                       setTimeout(connect, 1500); };
+}
+connect();
+setInterval(loadTimeline, 1500);
+</script>
+</body>
+</html>
