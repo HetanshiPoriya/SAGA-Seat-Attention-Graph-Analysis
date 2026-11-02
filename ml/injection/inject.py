@@ -83,6 +83,64 @@ def turn_around(sess: Session, rng, seat: str, start: float, k=2, hold=2.5, wind
              "expected": ["TURNED_AROUND"], "k": k}]
 
 
+def _hold_object(sess: Session, seat: str, start: float, hold: float, cls: str, obj_id: int,
+                 below: bool, dist=0.45, conf=0.6) -> np.ndarray:
+    """Mark one object as held by `seat` for `hold` s. Returns the time mask it was written on."""
+    s, t = _series(sess, seat)
+    m = (t >= start) & (t <= start + hold)
+    s.objects()[m] = cls
+    s.data["obj_id"][m] = float(obj_id)
+    s.data["obj_dist"][m] = dist
+    s.data["obj_interact"][m] = 1.0
+    s.data["obj_below"][m] = 1.0 if below else 0.0
+    s.data["obj_conf"][m] = conf
+    return m
+
+
+def phone_in_lap(sess: Session, rng, seat: str, start: float, hold=12.0, cls="phone",
+                 hide_wrists=True, pitch_drop=25.0) -> list[dict]:
+    """A phone used below the desk: object in the lap, head down, hands usually out of sight
+    (spec P5 'phone-in-lap'). Normally also looks like HANDS_BELOW_DESK — that rule is allowed to
+    fire too, but the object rule is the one that must."""
+    s, t = _series(sess, seat)
+    m = _hold_object(sess, seat, start, hold, cls, int(rng.integers(1, 10 ** 6)), below=True,
+                     dist=rng.uniform(0.3, 0.8), conf=rng.uniform(0.4, 0.8))
+    p = profile(t, start, hold, ramp=1.0)
+    s.data["pitch"] -= pitch_drop * p
+    s.data["wrist_drop"] += 1.0 * p
+    if hide_wrists:
+        s.data["wrists_vis"][m] = 0.0
+    return [{"seat": seat, "type": "phone_in_lap", "start": start, "end": start + hold + 2,
+             "expected": ["PHONE_IN_LAP"], "hold": hold, "obj_class": cls}]
+
+
+def object_in_hand(sess: Session, rng, seat: str, start: float, hold=6.0, cls="phone") -> list[dict]:
+    """A prohibited object held at desk level (phone on the desk, earpiece in the hand)."""
+    _hold_object(sess, seat, start, hold, cls, int(rng.integers(1, 10 ** 6)), below=False,
+                 dist=rng.uniform(0.2, 0.7), conf=rng.uniform(0.4, 0.8))
+    return [{"seat": seat, "type": "object_in_hand", "start": start, "end": start + hold + 2,
+             "expected": ["OBJECT_IN_USE"], "hold": hold, "obj_class": cls}]
+
+
+def chit_pass(sess: Session, rng, src: str, dst: str, start: float, hold=2.0, gap=1.0, cls="chit",
+              glance=True) -> list[dict]:
+    """A chit passed from `src` to `dst`: the SAME object id is held by the sender, then by the
+    receiver a moment later (spec §8.2 'Chit passing'). Both students usually glance at each other
+    while doing it, which the SAG may also pick up."""
+    oid = int(rng.integers(1, 10 ** 6))
+    _hold_object(sess, src, start, hold, cls, oid, below=False, dist=rng.uniform(0.2, 0.6))
+    _hold_object(sess, dst, start + hold + gap, hold, cls, oid, below=False, dist=rng.uniform(0.2, 0.6))
+    if glance:
+        for a, b in ((src, dst), (dst, src)):
+            s, t = _series(sess, a)
+            sign = np.sign(sess.pos[b][0] - sess.pos[a][0]) or 1.0
+            s.data["yaw"] += sign * 30.0 * profile(t, start + rng.uniform(0, hold), 1.0)
+    end = start + 2 * hold + gap
+    gt = {"seat": src, "type": "chit_pass", "target": dst, "start": start, "end": end,
+          "expected": ["CHIT_TRANSFER"], "relational": "CHIT_TRANSFER", "obj_class": cls}
+    return [gt, {**gt, "seat": dst, "target": src}]
+
+
 def hand_near_face(sess: Session, rng, seat: str, start: float, hold=8.0) -> list[dict]:
     s, t = _series(sess, seat)
     p = profile(t, start, hold, ramp=0.5)

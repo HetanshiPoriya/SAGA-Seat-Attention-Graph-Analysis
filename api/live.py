@@ -26,6 +26,7 @@ class LiveState:
         self.alerts: deque[dict] = deque(maxlen=300)
         self.events: deque[dict] = deque(maxlen=100)
         self.edges: list[dict] = []
+        self.transfers: list[dict] = []   # objects passed between seats in the last 2 min (P5)
         self.health = {"fps": None, "frames": 0, "people": 0, "t": 0.0, "updated": None}
         self.status = {"phase": "starting", "calib_left_s": None}
         self.version = 0
@@ -37,7 +38,8 @@ class LiveState:
         with self.lock:
             self.layout = seats
             self.seats = {s["label"]: {"level": "calibrating", "risk": 0.0, "obs": None, "present": False,
-                                       "yaw": None, "pitch": None, "facing": None} for s in seats}
+                                       "yaw": None, "pitch": None, "facing": None, "object": None}
+                          for s in seats}
             self.version += 1
 
     def update(self, t: float, reasoner, rows: list[dict], out=None, fps: float | None = None, people: int = 0):
@@ -54,11 +56,19 @@ class LiveState:
                     yaw = row.get("yaw") if yaw is None or yaw != yaw else yaw
                     s.update(yaw=_num(yaw, 1), pitch=_num(row.get("pitch_s", row.get("pitch")), 1),
                              facing=row.get("facing"))
+                    cls = row.get("obj_class") or ""
+                    s["object"] = ({"cls": cls, "interact": bool(row.get("obj_interact")),
+                                    "below": bool(row.get("obj_below")), "conf": _num(row.get("obj_conf"))}
+                                   if cls else None)
+                else:
+                    s["object"] = None
                     tl = self.timeline[label]
                     if not tl or t - tl[-1][0] >= 0.2:
                         tl.append((round(t, 2), s["yaw"], s["pitch"], s["risk"]))
             self.edges = [{"src": a, "dst": b, "n": n, "dwell": round(d, 1)}
                           for (a, b), (n, d) in reasoner.edges(t, 120).items()]
+            self.transfers = [{"src": x["src"], "dst": x["dst"], "cls": x["cls"], "t": round(x["t"], 1)}
+                              for x in reasoner.transfer.transfers if x["t"] >= t - 120]
             bl = reasoner.baseline
             left = None if bl.start_t is None else max(0.0, bl.calib_s - (t - bl.start_t))
             self.status = {"phase": "calibrating" if left is None or left > 0 else "monitoring",
@@ -80,6 +90,7 @@ class LiveState:
         with self.lock:
             return {"meta": self.meta, "status": self.status, "health": self.health, "version": self.version,
                     "layout": self.layout, "seats": self.seats, "edges": self.edges,
+                    "transfers": self.transfers,
                     "alerts": list(self.alerts)[:50], "events": list(self.events)[:20]}
 
     def seat_timeline(self, seat: str) -> dict:

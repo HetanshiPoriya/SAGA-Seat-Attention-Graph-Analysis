@@ -140,6 +140,16 @@ function drawMap() {
     edgesG.append(el("text", { x: (sx + ex) / 2 + nx, y: (sy + ey) / 2 + ny - 4, "text-anchor": "middle", "font-size": 15,
       fill: "var(--edge)", "font-weight": 700 }, `${e.n}×`));
   }
+  for (const x of state.transfers || []) {   // P5: object passed hand to hand (dashed, red)
+    const a = pos[x.src], b = pos[x.dst]; if (!a || !b) continue;
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1, nx = dy / L * 14, ny = -dx / L * 14;
+    const f = Math.min(0.45, (size * 0.55) / L);
+    const sx = a[0] + dx * f + nx, sy = a[1] + dy * f + ny, ex = a[0] + dx * (1 - f) + nx, ey = a[1] + dy * (1 - f) + ny;
+    edgesG.append(el("line", { x1: sx, y1: sy, x2: ex, y2: ey, stroke: "var(--red)", "stroke-width": 4,
+      "stroke-dasharray": "8 5", "stroke-linecap": "round", "marker-end": "url(#arrow)" }));
+    edgesG.append(el("text", { x: (sx + ex) / 2 + nx, y: (sy + ey) / 2 + ny - 4, "text-anchor": "middle",
+      "font-size": 14, fill: "var(--red)", "font-weight": 700 }, x.cls));
+  }
   for (const s of state.layout) {
     const st = state.seats[s.label] || {}, [x, y] = pos[s.label];
     const g = el("g", { class: "seat" + (selected === s.label ? " sel" : ""), tabindex: 0 });
@@ -150,6 +160,11 @@ function drawMap() {
       fill: "#10151f" }, s.label));
     const sub = st.level === "calibrating" ? "learning" : `risk ${(st.risk ?? 0).toFixed(2)}`;
     g.append(el("text", { x, y: y + size * 0.22, "text-anchor": "middle", "font-size": Math.max(11, size * 0.12), fill: "#10151f" }, sub));
+    if (st.object) {   // P5: what the student is holding
+      const tag = st.object.cls + (st.object.below ? " ↓" : "");
+      g.append(el("text", { x, y: y - size * 0.44, "text-anchor": "middle", "font-size": Math.max(11, size * 0.13),
+        "font-weight": 700, fill: st.object.interact ? "var(--red)" : "var(--muted)" }, tag));
+    }
     g.addEventListener("click", () => selectSeat(s.label));
     g.addEventListener("keydown", ev => { if (ev.key === "Enter") selectSeat(s.label); });
     seatsG.append(g);

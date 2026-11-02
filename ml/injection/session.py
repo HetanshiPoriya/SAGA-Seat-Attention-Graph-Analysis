@@ -14,7 +14,10 @@ from pathlib import Path
 
 import numpy as np
 
-SERIES = ["yaw", "pitch", "lean_x", "shoulder_tilt", "wrist_drop", "wrists_vis", "hand_face", "head_px", "kp_conf"]
+SERIES = ["yaw", "pitch", "lean_x", "shoulder_tilt", "wrist_drop", "wrists_vis", "hand_face", "head_px",
+          "kp_conf", "obj_id", "obj_dist", "obj_interact", "obj_below", "obj_conf"]
+# P5 object channels; 0 / NaN and obj_class "" mean "no object detected for this seat in this frame"
+OBJ_SERIES = ["obj_id", "obj_dist", "obj_interact", "obj_below", "obj_conf"]
 
 
 @dataclass
@@ -22,6 +25,13 @@ class SeatSeries:
     t: np.ndarray
     data: dict[str, np.ndarray]          # SERIES -> float arrays (NaN = unknown)
     facing: np.ndarray                   # str array
+    obj_class: np.ndarray | None = None  # str array ("" = nothing detected); None = no object channel
+
+    def objects(self) -> np.ndarray:
+        """The obj_class array, created empty on first use (injectors write into it)."""
+        if self.obj_class is None:
+            self.obj_class = np.full(len(self.t), "", dtype=object)
+        return self.obj_class
 
 
 @dataclass
@@ -46,7 +56,8 @@ class Session:
         frames: dict[float, list[dict]] = {}
         for seat, s in self.seats.items():
             for i, t in enumerate(s.t):
-                row = {"seat": seat, "facing": str(s.facing[i])}
+                row = {"seat": seat, "facing": str(s.facing[i]),
+                       "obj_class": str(s.obj_class[i]) if s.obj_class is not None else ""}
                 for k in SERIES:
                     row[k] = float(s.data[k][i])
                 frames.setdefault(round(float(t), 3), []).append(row)
@@ -54,7 +65,9 @@ class Session:
 
     def copy(self) -> "Session":
         return Session(self.source, {k: SeatSeries(v.t.copy(), {kk: vv.copy() for kk, vv in v.data.items()},
-                                                   v.facing.copy()) for k, v in self.seats.items()},
+                                                   v.facing.copy(),
+                                                   None if v.obj_class is None else v.obj_class.copy())
+                                     for k, v in self.seats.items()},
                        dict(self.pos), list(self.natural))
 
 
@@ -77,8 +90,10 @@ def from_features_csv(path: str | Path, seatmap_json: str | Path | None = None) 
                 v = r.get(alt) if alt and r.get(alt) not in (None, "") else r.get(k, "")
                 out.append(float(v) if v not in ("", None) else math.nan)
             return np.array(out)
+        objs = (np.array([r.get("obj_class", "") or "" for r in rs], dtype=object)
+                if any(r.get("obj_class") for r in rs) else None)   # only runs with --objects have these
         seats[seat] = SeatSeries(np.array([float(r["t"]) for r in rs]), {k: col(k) for k in SERIES},
-                                 np.array([r.get("facing", "unknown") for r in rs], dtype=object))
+                                 np.array([r.get("facing", "unknown") for r in rs], dtype=object), objs)
         pos[seat] = centres.get(seat) or _label_pos(seat)
     return Session(f"real:{Path(path).name}", seats, pos)
 
@@ -97,6 +112,7 @@ def synthetic_session(rows=3, cols=4, duration_s=480.0, fps=10.0, seed=0, distra
     n = int(duration_s * fps)
     t = np.arange(n) / fps
     seats, pos, natural = {}, {}, []
+    next_obj_id = 1000
     for r in range(rows):
         for c in range(cols):
             label = f"{string.ascii_uppercase[r]}{c + 1}"
@@ -107,7 +123,10 @@ def synthetic_session(rows=3, cols=4, duration_s=480.0, fps=10.0, seed=0, distra
             data = {"yaw": yaw, "pitch": pitch, "lean_x": _ar1(rng, n, sd=0.03, a=0.98),
                     "shoulder_tilt": rng.normal(0, 3) + _ar1(rng, n, sd=1.5, a=0.95), "wrist_drop": wrist,
                     "wrists_vis": np.where(rng.random(n) < 0.03, 1.0, 2.0), "hand_face": hand_face,
-                    "head_px": np.full(n, 55.0 - 8 * r), "kp_conf": np.clip(rng.normal(0.75, 0.05, n), 0, 1)}
+                    "head_px": np.full(n, 55.0 - 8 * r), "kp_conf": np.clip(rng.normal(0.75, 0.05, n), 0, 1),
+                    "obj_id": np.full(n, math.nan), "obj_dist": np.full(n, math.nan),
+                    "obj_interact": np.zeros(n), "obj_below": np.zeros(n), "obj_conf": np.full(n, math.nan)}
+            objclass = np.full(n, "", dtype=object)
             for _ in range(rng.poisson(duration_s / 40)):        # look up at the question paper
                 s = rng.uniform(0, duration_s - 6)
                 _add(data["pitch"], t, s, rng.uniform(2, 5), 18)
@@ -118,9 +137,27 @@ def synthetic_session(rows=3, cols=4, duration_s=480.0, fps=10.0, seed=0, distra
                         s = rng.uniform(0, duration_s - 10)
                         fn(rng, data, t, s)
                         natural.append({"seat": label, "kind": kind, "start": s})
+                # Two object distractors a good system must NOT flag (spec §3 gap G3,
+                # "object presence ≠ cheating"):
+                #   allowed_object  — a bottle or the question paper actually in the hand
+                #   object_on_desk  — a PROHIBITED class detected near the seat but not in the hand
+                #                     (phone left on the desk, a watch on a neighbour's wrist)
+                for kind, rate, cls_choices, interact in (("allowed_object", 300, ["bottle", "book"], 1.0),
+                                                          ("object_on_desk", 400, ["phone", "smartwatch"], 0.0)):
+                    for _ in range(rng.poisson(duration_s / rate)):
+                        s = rng.uniform(0, max(duration_s - 20, 1))
+                        hold = rng.uniform(5, 15)
+                        m = (t >= s) & (t <= s + hold)
+                        objclass[m] = str(rng.choice(cls_choices))
+                        data["obj_id"][m] = float(next_obj_id)
+                        data["obj_dist"][m] = rng.uniform(0.3, 0.9) if interact else rng.uniform(1.6, 3.0)
+                        data["obj_interact"][m] = interact
+                        data["obj_conf"][m] = rng.uniform(0.4, 0.8)
+                        next_obj_id += 1
+                        natural.append({"seat": label, "kind": kind, "start": s})
             keep = rng.random(n) > 0.02                           # 2% missed detections
             seats[label] = SeatSeries(t[keep], {k: v[keep] for k, v in data.items()},
-                                      np.full(int(keep.sum()), "camera", dtype=object))
+                                      np.full(int(keep.sum()), "camera", dtype=object), objclass[keep])
             pos[label] = (float(c + 1), float(r))
     return Session(f"synthetic(seed={seed})", seats, pos, natural)
 

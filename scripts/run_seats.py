@@ -3,6 +3,7 @@
     python scripts\\run_seats.py --source 0 --calib outputs\\calib\\webcam.json
     python scripts\\run_seats.py --source clip.mp4 --auto-seats 60 --save
     python scripts\\run_seats.py --source 0 --auto-seats 30 --reason --calib-seconds 30   # P2 live
+    python scripts\\run_seats.py --source 0 --auto-seats 30 --objects --dashboard        # P5 + P3
 Keys: q / Esc quit · space pause
 Writes outputs\\features_<source>_<time>.csv (one row per seat per frame; no images, no faces);
 with --reason also events/alerts to outputs\\saga.db.
@@ -25,15 +26,20 @@ from edge.calibration.seat_lock import SeatLocker  # noqa: E402
 from edge.calibration.seatmap import AutoSeatBuilder, SeatMap  # noqa: E402
 from edge.ingest.sources import open_source, resolve_model, source_name  # noqa: E402
 from edge.perception.head_pose import body_features, hand_features, head_pose  # noqa: E402
+from edge.perception.interaction import EMPTY as NO_OBJECT  # noqa: E402
+from edge.perception.interaction import seat_object_rows  # noqa: E402
+from edge.perception.objects import ObjectTracker, draw_objects  # noqa: E402
 from edge.perception.pose_tracker import PoseTracker, id_color  # noqa: E402
 from edge.viz import draw_head_arrow, draw_sag_edges, draw_skeleton, hud, label, ui_scale  # noqa: E402
 
 CSV_FIELDS = ["frame", "t", "seat", "track_id", "facing", "yaw", "pitch", "yaw_s", "pitch_s",
               "lean_x", "shoulder_tilt", "shoulder_ratio", "wrist_drop", "wrists_vis", "hand_face",
-              "head_px", "kp_conf"]
+              "head_px", "kp_conf", "obj_class", "obj_id", "obj_dist", "obj_interact", "obj_below",
+              "obj_conf"]
 CSV_FMT = {"yaw": ".1f", "pitch": ".1f", "yaw_s": ".1f", "pitch_s": ".1f", "lean_x": ".3f",
            "shoulder_tilt": ".1f", "shoulder_ratio": ".3f", "wrist_drop": ".3f", "wrists_vis": ".0f",
-           "hand_face": ".3f", "head_px": ".0f", "kp_conf": ".2f"}
+           "hand_face": ".3f", "head_px": ".0f", "kp_conf": ".2f", "obj_id": ".0f", "obj_dist": ".2f",
+           "obj_interact": ".0f", "obj_below": ".0f", "obj_conf": ".2f"}
 LEVEL_COLORS = {"green": (60, 200, 60), "amber": (0, 165, 255), "red": (0, 0, 255), "grey": (128, 128, 128),
                 "calibrating": (200, 200, 200)}
 
@@ -91,6 +97,15 @@ def main():
     ap.add_argument("--no-csv", action="store_true")
     ap.add_argument("--no-show", action="store_true")
     ap.add_argument("--max-frames", type=int, default=0)
+    ap.add_argument("--objects", action="store_true",
+                    help="P5: detect objects in hand/lap ROIs (phone, chit, ...) and log interaction features")
+    ap.add_argument("--obj-model", default="yolo11n.pt",
+                    help="object weights; yolo11n.pt (COCO) gives phone/book/bottle, models\\objects.pt adds chit etc.")
+    ap.add_argument("--obj-imgsz", type=int, default=320)
+    ap.add_argument("--obj-conf", type=float, default=0.30)
+    ap.add_argument("--obj-every", type=int, default=3, help="run the object detector every N frames (spec: 3-5 fps)")
+    ap.add_argument("--obj-full-frame", action="store_true",
+                    help="ablation: detect on the whole frame instead of hand/lap ROIs")
     ap.add_argument("--reason", action="store_true", help="P2: baseline + rules + risk, live")
     ap.add_argument("--calib-seconds", type=float, default=None,
                     help="baseline length (default from reasoner/config.yaml = 180; ~30 for a webcam demo)")
@@ -101,6 +116,14 @@ def main():
     args.reason = args.reason or args.dashboard
 
     tracker = PoseTracker(resolve_model(args.model), imgsz=args.imgsz, conf=args.conf)
+    detector = obj_tracker = None
+    objects: list = []
+    if args.objects:
+        from edge.perception.objects import ObjectDetector
+        detector = ObjectDetector(resolve_model(args.obj_model), imgsz=args.obj_imgsz, conf=args.obj_conf)
+        obj_tracker = ObjectTracker()
+        print(f"objects: {args.obj_model} -> classes {sorted(set(detector.map.values())) or '(none mapped!)'}"
+              f"{' (full frame)' if args.obj_full_frame else ' on hand/lap ROIs'}")
     cap = open_source(args.source)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30
     live = args.source.isdigit()  # webcam: real time (processing fps < camera fps); file: frame time
@@ -148,6 +171,10 @@ def main():
         t0 = time.perf_counter()
         t_now = (t0 - t_start) if live else n / src_fps
         people = tracker(frame)
+        if detector is not None and n % max(args.obj_every, 1) == 0:
+            # between detector frames the previous boxes are reused (they are < 0.5 s old)
+            objects = detector.full_frame(frame) if args.obj_full_frame else detector(frame, people)
+            obj_tracker.update(t_now, objects, scale=max(frame.shape[1] / 20, 20))
 
         if seatmap is None:  # still collecting the auto seat map
             builder.add(people)
@@ -176,6 +203,7 @@ def main():
                     lbl: LEVEL_COLORS["calibrating" if v.calibrating else v.level] for lbl, v in views.items()})
             else:
                 seatmap.draw(frame, locker.occupied)
+            obj_rows = seat_object_rows(seats, objects) if detector is not None else {}
             seated, rows = set(), []
             for lbl, st in seats.items():
                 p = st.person
@@ -194,6 +222,7 @@ def main():
                        "head_px": hp.head_px, "kp_conf": float(np.mean(p.kpt_conf[:7]))}
                 row.update({k: v for k, v in body_features(p.kpts, p.kpt_conf, p.box).items() if k in CSV_FMT})
                 row.update(hand_features(p.kpts, p.kpt_conf))
+                row.update(obj_rows.get(lbl, NO_OBJECT))
                 rows.append(row)
 
                 color = id_color(zlib.crc32(lbl.encode()))
@@ -201,6 +230,10 @@ def main():
                 draw_head_arrow(frame, hp.origin, ys, ps, hp.head_px)
                 head = "away" if hp.facing == "away" else f"y{fmt(ys)} p{fmt(ps)}"
                 text = f"{lbl}  {head}"
+                o = obj_rows.get(lbl)
+                if o and o["obj_class"]:
+                    text += f"  [{o['obj_class']}{'!' if o['obj_interact'] else ''}" \
+                            f"{' lap' if o['obj_below'] else ''}]"
                 if reasoner:
                     v = views[lbl]
                     text += "  calibrating" if v.calibrating else f"  risk {v.risk:.2f}"
@@ -214,8 +247,12 @@ def main():
                 if id(p) not in seated:
                     draw_skeleton(frame, p, (150, 150, 150))
                     label(frame, "?", (p.box[0], p.box[1]), (150, 150, 150))
+            if detector is not None:
+                draw_objects(frame, objects, detector.rois)
             status = (f"seats occupied {len(locker.occupied)}/{len(seatmap.seats)}  "
                       f"people {len(people)}  ID switches absorbed {locker.handovers}")
+            if detector is not None:
+                status += f"  objects {len(objects)}"
 
             if reasoner:
                 out = reasoner.step(t_now, rows)

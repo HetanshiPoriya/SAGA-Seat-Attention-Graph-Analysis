@@ -42,6 +42,15 @@ sag:                        # Seat Attention Graph (spec §8)
   copy_weight: 0.35          # same as SIDE_GLANCE_REPEAT, which it replaces: SAG names the neighbour, adds no extra risk
   mutual_weight: 0.45
 
-despike_s: 1.0                # causal median on head angles: removes keypoint glitches (real jitter: 9.8 -> 0.75 false alerts/student-h)
+transfer:                     # object passed from one seat's hand to a neighbour's (spec §9.2 CHIT_TRANSFER)
+  classes: [chit, phone, calculator]   # passing a pen or a bottle is not misconduct
+  min_hold_s: 0.5             # the source must really have held it (not one stray detection)
+  max_gap_s: 4.0              # hand-to-hand must complete this fast, else it is two separate sightings
+  reach: 1.6                  # source and destination must be within 1.6 seat spacings
+  min_conf: 0.0               # raise (e.g. 0.5) if the object detector is noisy
+  cooldown_s: 120
+  weight: 0.70
+
+despike_s: 1.0              # causal median on head angles: removes keypoint glitches (real jitter: 9.8 -> 0.75 false alerts/student-h)
 
 rules_file: rules/rules.yaml

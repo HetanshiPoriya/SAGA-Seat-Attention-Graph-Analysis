@@ -111,6 +111,12 @@ class BaselineModel:
                ("yaw", "pitch", "lean_x", "shoulder_tilt", "wrist_drop", "wrists_vis", "hand_face",
                 "head_px", "kp_conf")}
         ctx["facing"] = row.get("facing", "unknown")
+        # hand-object interaction (P5): absolute, not baseline-relative — a phone is a phone whatever
+        # this student's normal looks like. obj_class is "" when nothing was detected for this seat.
+        ctx["obj_class"] = row.get("obj_class") or ""
+        ctx["obj_dist"], ctx["obj_conf"] = row.get("obj_dist", math.nan), row.get("obj_conf", math.nan)
+        ctx["obj_interact"] = row.get("obj_interact", 0.0) or 0.0
+        ctx["obj_below"] = row.get("obj_below", 0.0) or 0.0
         for k in Z_FEATURES:
             med, s = b.med.get(k, math.nan), b.sigma.get(k, math.nan)
             ctx[f"{k}_med"] = med
@@ -168,7 +174,8 @@ class RecentMedian:
 
 
 CONTEXT_NAMES = ({"yaw", "pitch", "lean_x", "shoulder_tilt", "wrist_drop", "wrists_vis", "hand_face",
-                  "head_px", "kp_conf", "facing", "away_base", "profile_base", "wrists_vis_base"}
+                  "head_px", "kp_conf", "facing", "away_base", "profile_base", "wrists_vis_base",
+                  "obj_class", "obj_dist", "obj_interact", "obj_below", "obj_conf"}
                  | {f"{k}_z" for k in Z_FEATURES} | {f"{k}_med" for k in Z_FEATURES}
                  | {f"{k}_{sfx}" for k in RecentMedian.KEYS for sfx in ("dev", "dev_z", "dev_long", "dev_long_z")}
                  | {"yaw_dev_peak", "yaw_dev_ref"})  # set by the rule engine inside an episode (end_when)

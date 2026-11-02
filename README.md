@@ -5,19 +5,19 @@ Privacy-first, relation-aware AI invigilation. Full design: [SAGA_PROJECT_SPEC.m
 ## Setup (Windows, PowerShell, Python 3.13)
 
 ```powershell
-cd C:\NirikshakAI
+cd "C:\SAGA — Seat Attention Graph Analysis"
 py -3.13 -m venv venv
 .\venv\Scripts\Activate.ps1          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 pip install -r requirements.txt
 ```
 
-Datasets live **outside** the repo in `C:\nirikshak_data\` (override with `$env:SAGA_DATA`).
+Datasets live **outside** the repo in `C:\SAGA_data\` (override with `$env:SAGA_DATA`).
 
 ## P-1 — Data
 
 ```powershell
 python scripts\inspect_d1.py                                        # Kaggle copy (images only)
-python scripts\inspect_d1.py --root C:\nirikshak_data\smart_invigilator   # labelled Roboflow copy
+python scripts\inspect_d1.py --root C:\SAGA_data\smart_invigilator   # labelled Roboflow copy
 ```
 
 ## P0 — Pose + tracking
@@ -41,7 +41,7 @@ python scripts\run_seats.py --source 0 --calib outputs\calib\webcam.json
 python scripts\run_seats.py --source clip.mp4 --auto-seats 60 --save
 
 # D1 posture evaluation (needs the labelled dataset)
-python scripts\eval_d1.py --root C:\nirikshak_data\smart_invigilator   # -> outputs\d1_eval\report.md
+python scripts\eval_d1.py --root C:\SAGA_data\smart_invigilator   # -> outputs\d1_eval\report.md
 ```
 
 Head pose is in image terms: `y+` = face turned to image-right, `p-` = looking down.
@@ -70,7 +70,7 @@ stored in `outputs\saga.db` (SQLite; same tables as the planned Postgres schema)
 ```powershell
 python scripts\dashboard.py --demo                       # scripted 15-seat class, no camera needed
 python scripts\run_seats.py --source 0 --auto-seats 30 --dashboard --calib-seconds 30   # live webcam
-python scripts\run_seats.py --source C:\nirikshak_data\videos\clip.mp4 --auto-seats 45 --dashboard
+python scripts\run_seats.py --source C:\SAGA_data\videos\clip.mp4 --auto-seats 45 --dashboard
 ```
 
 Open http://127.0.0.1:8000 — hall map (risk colours, Seat Attention Graph arrows), alert feed with
@@ -88,6 +88,35 @@ back), `MUTUAL_ORIENTATION` (i ⇄ j within 5 s, twice), `ATTENTION_HUB` (≥ 3 
 seat; informational). Evaluate with `python scripts\simulate.py` (tiers: synthetic, synthetic +
 real detector jitter, real-track bootstrap stress test; with vs without SAG).
 
+## P5 — Objects + interaction
+
+```powershell
+# live, with hand/lap-ROI object detection (COCO weights: phone, book, bottle)
+python scripts\run_seats.py --source 0 --auto-seats 30 --objects --reason --calib-seconds 30
+
+# with a fine-tuned detector (adds chit / earphone / smartwatch — needs a labelled set, see below)
+python scripts\run_seats.py --source 0 --auto-seats 30 --objects --obj-model models\objects.pt --dashboard
+
+# train that detector from a Roboflow YOLO export, then measure it
+python scripts\train_objects.py --data C:\SAGA_data\exam_objects --epochs 50 --imgsz 320
+python scripts\eval_objects.py  --data C:\SAGA_data\exam_objects --model models\objects.pt
+python scripts\eval_objects.py  --count-only --data C:\SAGA_data\smart_invigilator\valid\images \
+                                --imgsz 320 --full-imgsz 960      # ROI vs full frame, no labels needed
+```
+
+Objects are detected **inside wrist and lap ROIs** taken from the pose keypoints
+([edge/perception/objects.py](edge/perception/objects.py)), not in the whole frame, so a phone that
+is 20 px wide in a CCTV frame fills a useful part of a crop. Interaction features
+([edge/perception/interaction.py](edge/perception/interaction.py)) say whose hand the object is in,
+how close it is (`obj_dist`, shoulder widths) and whether it is below desk level (`obj_below`) —
+presence alone never alerts. Rules `OBJECT_IN_USE` and `PHONE_IN_LAP` live in the YAML; passing an
+object from one seat to a neighbour is `CHIT_TRANSFER`
+([reasoner/transfer.py](reasoner/transfer.py), settings under `transfer:` in the config), which
+names both seats and is drawn as a dashed red arrow on the dashboard map.
+
+Object detection costs one nano forward pass per ROI, so it runs every `--obj-every` frames
+(default 3 → 3–5 fps, as the spec wants) while pose keeps its own rate.
+
 Tests: `python -m pytest -q`
 
 ## Layout
@@ -96,14 +125,17 @@ Tests: `python -m pytest -q`
 config.py                       paths (data root outside repo)
 edge/ingest/sources.py          open webcam/video, model weights location
 edge/perception/                pose_tracker.py (YOLO pose + BoT-SORT), botsort.yaml,
-                                head_pose.py (geometric yaw/pitch + torso features)
+                                head_pose.py (geometric yaw/pitch + torso features),
+                                objects.py (hand/lap-ROI detector + object tracker),
+                                interaction.py (hand-object features per seat)
 edge/calibration/               seatmap.py (grid homography / auto seats), seat_lock.py
 edge/viz.py                     overlay drawing
 reasoner/                       baseline.py (per-seat median/MAD, rolling recent direction),
                                 rules/ (safe YAML rule engine), sag.py (Seat Attention Graph),
-                                risk.py, store.py (SQLite + feedback), reasoner.py (+ despike filter)
+                                transfer.py (object passed between seats), risk.py,
+                                store.py (SQLite + feedback), reasoner.py (+ despike filter)
 api/                            live.py (shared hall state), app.py (FastAPI + WebSocket), static/index.html
-ml/datasets/cctv_exam.py        D1 loader (auto-detects YOLO / COCO / CSV / folder layouts)
+ml/datasets/                    cctv_exam.py (D1 loader), objects.py (YOLO export -> SAGA classes)
 ml/injection/                   session.py (real CSV / synthetic class), inject.py (behaviours + ground truth),
                                 bootstrap.py (real-track bootstrap, real detector jitter)
 ml/eval/                        d1_posture.py, injection_eval.py (recall, FA/student-hour, sweeps)

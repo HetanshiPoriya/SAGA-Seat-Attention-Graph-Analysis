@@ -13,11 +13,13 @@ from reasoner.baseline import BaselineModel
 from reasoner.risk import Alert, RiskScorer, observability
 from reasoner.rules.engine import Event, RuleEngine, load_rules
 from reasoner.sag import SeatAttentionGraph
+from reasoner.transfer import TransferDetector
 
 HERE = Path(__file__).resolve().parent
 RELATIONAL_GLANCE = {"COPYING_ONE_WAY", "MUTUAL_ORIENTATION"}
 NUMERIC = ["yaw", "pitch", "yaw_s", "pitch_s", "lean_x", "shoulder_tilt", "shoulder_ratio", "wrist_drop",
-           "wrists_vis", "hand_face", "head_px", "kp_conf"]
+           "wrists_vis", "hand_face", "head_px", "kp_conf",
+           "obj_id", "obj_dist", "obj_interact", "obj_below", "obj_conf"]
 
 
 @dataclass
@@ -50,6 +52,7 @@ class Reasoner:
         self.rules = RuleEngine(load_rules(rules_file or (Path(config).parent / cfg["rules_file"])))
         self.risk = RiskScorer(**cfg["risk"])
         self.sag = SeatAttentionGraph(seat_positions, cfg.get("sag")) if seat_positions else None
+        self.transfer = TransferDetector(seat_positions, cfg.get("transfer"))
         self.pending: dict[str, list[Event]] = defaultdict(list)  # SAG events waiting for that seat's row
         self.despike_s = cfg.get("despike_s", 1.0)
         self.recent_angles: dict[str, deque] = defaultdict(deque)
@@ -70,6 +73,8 @@ class Reasoner:
                 for seat, e in self.sag.observe(t, row["seat"], ctx, observability(row)):
                     self.pending[seat].append(e)
             ready.append(row)
+        for seat, e in self.transfer.observe(t, ready):  # object passed between two seats (P5)
+            self.pending[seat].append(e)
         for row in ready:  # second pass: relational events may concern any seat in this frame
             events = self.pending.pop(row["seat"], [])
             if any(e.rule_id in RELATIONAL_GLANCE for e in events):
@@ -129,7 +134,8 @@ def read_features_csv(path: str | Path) -> list[tuple[float, list[dict]]]:
     frames: dict[float, list[dict]] = {}
     with open(path, newline="") as f:
         for r in csv.DictReader(f):
-            row = {"seat": r["seat"], "facing": r.get("facing", "unknown")}
+            row = {"seat": r["seat"], "facing": r.get("facing", "unknown"),
+                   "obj_class": r.get("obj_class", "") or ""}
             for k in NUMERIC:
                 v = r.get(k, "")
                 row[k] = float(v) if v not in ("", None) else math.nan

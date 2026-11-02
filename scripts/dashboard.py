@@ -32,6 +32,8 @@ def demo_session(calib_s: float, seed: int):
     inject.mutual(sess, rng, "A4", "A5", t0 + 40, k=3, window=60)        # A4 and A5 turn to each other
     inject.hands_under_desk(sess, rng, "C1", t0 + 70, hold=10)
     inject.turn_around(sess, rng, "A1", t0 + 110, k=2, window=40)
+    inject.phone_in_lap(sess, rng, "C4", t0 + 150, hold=12)              # phone used below the desk
+    inject.chit_pass(sess, rng, "C2", "C3", t0 + 200)                    # chit passed C2 -> C3
     return sess
 
 

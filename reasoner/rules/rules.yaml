@@ -21,6 +21,11 @@
 #             the head direction just before the episode started)
 #   facing:   facing ('camera' | 'away' | 'profile' | 'unknown'), away_base / profile_base (share of
 #             baseline frames facing away / seen side-on), wrists_vis_base (usual number of visible wrists)
+#   objects:  obj_class ('' | 'phone' | 'chit' | 'earphone' | 'smartwatch' | 'calculator' | 'book' | 'bottle'),
+#             obj_interact (1 = in/near this student's hand), obj_below (1 = in the lap / below desk level),
+#             obj_dist (wrist-to-object distance in shoulder widths), obj_conf (detector confidence).
+#             All 0/'' unless the run was started with --objects.
+#   detail_from: <feature> puts that feature's value into {detail} in the message (used for obj_class)
 # Head angles are in image terms: yaw > 0 = toward image-right, pitch < 0 = looking down.
 
 - id: SIDE_GLANCE_REPEAT        # quick turns toward one side and back, at desk level (peeking at a neighbour's paper)
@@ -69,6 +74,22 @@
   weight: 0.35
   message: "Hand held near face/ear for {duration}s"
 
-# Coming later:
-#   P4  MUTUAL_ORIENTATION, one-way copying toward a named neighbour (Seat Attention Graph)
-#   P5  OBJECT_IN_USE, CHIT_TRANSFER (hand-object interaction)
+- id: OBJECT_IN_USE              # a prohibited object in the hand, at desk level (spec §9.2)
+  when: obj_interact > 0.5 and obj_below < 0.5 and obj_conf > 0.35 and obj_class in ['phone', 'earphone', 'smartwatch', 'calculator', 'chit']
+  min_duration_s: 1.5           # a flickering detection is not evidence (spec: >= 8 frames)
+  cooldown_s: 60
+  detail_from: obj_class
+  weight: 0.60
+  message: "{detail} held in the hand for {duration}s"
+
+- id: PHONE_IN_LAP               # the same object down in the lap / below the desk, usually with the head down
+  when: obj_interact > 0.5 and obj_below > 0.5 and obj_conf > 0.35 and obj_class in ['phone', 'earphone', 'smartwatch', 'calculator', 'chit']
+  min_duration_s: 2.0
+  cooldown_s: 60
+  detail_from: obj_class
+  weight: 0.65
+  message: "{detail} held below desk level for {duration}s"
+
+# Not YAML rules, because they are about a PAIR of seats and need the seat geometry:
+#   COPYING_ONE_WAY / MUTUAL_ORIENTATION / ATTENTION_HUB -> reasoner/sag.py   (weights in config.yaml)
+#   CHIT_TRANSFER  (object track moves from one seat's hand to a neighbour's) -> reasoner/transfer.py

@@ -36,6 +36,9 @@ class RunResult:
     false_alerts: list = field(default_factory=list)
     latency: list[float] = field(default_factory=list)
     relational: list[dict] = field(default_factory=list)
+    clean_events: list = field(default_factory=list)   # on seats with NO injected behaviour at all
+    clean_alerts: list = field(default_factory=list)
+    clean_seats: int = 0
 
 
 def run(sess: Session, gt: list[dict], calib_s: float, rules_file=None, sag=True) -> RunResult:
@@ -70,6 +73,13 @@ def run(sess: Session, gt: list[dict], calib_s: float, rules_file=None, sag=True
     for a in alerts:
         if not any(g["seat"] == a.seat and g["start"] - TOL_S <= a.t <= g["end"] + 60 for g in gt):
             res.false_alerts.append(a)
+    # A seat that was given a behaviour keeps residual risk long after its scoring window, so a later
+    # ordinary glance there is counted "false" although most of the risk is real. The honest
+    # "normal student is left alone" number therefore uses only seats that were never touched.
+    touched = {g["seat"] for g in gt} | {g["target"] for g in gt if g.get("target")}
+    res.clean_seats = sum(s not in touched for s in sess.seats)
+    res.clean_events = [e for e in res.false_events if e.seat not in touched]
+    res.clean_alerts = [a for a in res.false_alerts if a.seat not in touched]
     return res
 
 
@@ -79,6 +89,7 @@ def summarize(results: list[RunResult]) -> dict:
     n_ev = sum(len(r.events) for r in results)
     n_fa = sum(len(r.false_events) for r in results)
     hours = sum(r.n_seats * max(r.duration - r.calib_s, 0) for r in results) / 3600
+    clean_hours = sum(r.clean_seats * max(r.duration - r.calib_s, 0) for r in results) / 3600
     lat = [x for r in results for x in r.latency]
     rel = [x for r in results for x in r.relational]
     det_rel = [x for x in rel if x["detected"] or x["wrong_target"]]
@@ -91,6 +102,11 @@ def summarize(results: list[RunResult]) -> dict:
             "alert_recall": np.mean(alr) if alr else float("nan"),
             "precision": (n_ev - n_fa) / n_ev if n_ev else float("nan"),
             "events": n_ev, "false_events": n_fa, "student_hours": hours,
+            "clean_alerts_per_student_hour": (sum(len(r.clean_alerts) for r in results) / clean_hours
+                                              if clean_hours else float("nan")),
+            "clean_events_per_student_hour": (sum(len(r.clean_events) for r in results) / clean_hours
+                                              if clean_hours else float("nan")),
+            "clean_student_hours": clean_hours,
             "fa_per_student_hour": n_fa / hours if hours else float("nan"),
             "false_alerts_per_student_hour": (sum(len(r.false_alerts) for r in results) / hours
                                               if hours else float("nan")),
@@ -115,20 +131,16 @@ def scenario(sess: Session, rng, calib_s: float) -> list[dict]:
     def at():
         return t0 + rng.uniform(0, span)
 
-    # copying toward a same-row neighbour (the source stays untouched)
-    for s in seats:
-        nb = [n for n in sess.same_row_neighbours(s) if n not in used]
-        if s not in used and nb:
-            used.update({s, nb[0]})
-            gt += inject.copying(sess, rng, s, nb[0], at())
-            break
-    for s in seats:
-        nb = [n for n in sess.same_row_neighbours(s) if n not in used]
-        if s not in used and nb:
-            used.update({s, nb[0]})
-            gt += inject.mutual(sess, rng, s, nb[0], at())
-            break
-    for fn in (inject.hands_under_desk, inject.turn_around, inject.hand_near_face):
+    # behaviours between two seats: copying (the source stays untouched), collusion, chit passing
+    for fn in (inject.copying, inject.mutual, inject.chit_pass):
+        for s in seats:
+            nb = [n for n in sess.same_row_neighbours(s) if n not in used]
+            if s not in used and nb:
+                used.update({s, nb[0]})
+                gt += fn(sess, rng, s, nb[0], at())
+                break
+    for fn in (inject.hands_under_desk, inject.turn_around, inject.hand_near_face,
+               inject.phone_in_lap, inject.object_in_hand):
         if len(used) < len(seats):
             gt += fn(sess, rng, free(), at())
     return gt
@@ -145,11 +157,22 @@ def copy_target(sess: Session, seat: str, rng) -> str:
     return f"virtual{'R' if side > 0 else 'L'}"
 
 
+def neighbour_seat(sess: Session, seat: str) -> str | None:
+    """A real same-row neighbour (chit passing needs a seat that is actually monitored)."""
+    nb = sess.same_row_neighbours(seat)
+    return nb[0] if nb else None
+
+
 BEHAVIOURS = {
     "copying": lambda s, rng, seat, t0: inject.copying(s, rng, seat, copy_target(s, seat, rng), t0),
     "hands_under_desk": lambda s, rng, seat, t0: inject.hands_under_desk(s, rng, seat, t0),
     "turn_around": lambda s, rng, seat, t0: inject.turn_around(s, rng, seat, t0),
     "hand_near_face": lambda s, rng, seat, t0: inject.hand_near_face(s, rng, seat, t0),
+    "phone_in_lap": lambda s, rng, seat, t0: inject.phone_in_lap(s, rng, seat, t0),
+    "object_in_hand": lambda s, rng, seat, t0: inject.object_in_hand(s, rng, seat, t0),
+    # needs a second monitored seat: skipped for single-seat (webcam) recordings
+    "chit_pass": lambda s, rng, seat, t0: (inject.chit_pass(s, rng, seat, neighbour_seat(s, seat), t0)
+                                           if neighbour_seat(s, seat) else []),
 }
 
 
@@ -157,12 +180,17 @@ def per_type(base: Session, rng, calib_s: float, repeats: int = 3) -> dict[str, 
     """Each behaviour injected alone into a copy of the session (works with a single real seat)."""
     out = {}
     for name, fn in BEHAVIOURS.items():
-        out[name] = []
+        results = []
         for _ in range(repeats):
             sess = base.copy()
             seat = str(rng.choice(list(sess.seats)))
             t0 = calib_s + 20 + rng.uniform(0, max(sess.duration - calib_s - 150, 1))
-            out[name].append(run(sess, fn(sess, rng, seat, t0), calib_s))
+            gt = fn(sess, rng, seat, t0)
+            if not gt:      # behaviour not applicable to this session (e.g. chit pass, one seat only)
+                break
+            results.append(run(sess, gt, calib_s))
+        if results:
+            out[name] = results
     return out
 
 

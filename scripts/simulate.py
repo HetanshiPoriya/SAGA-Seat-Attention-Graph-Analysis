@@ -38,7 +38,7 @@ def f(v, spec=".2f"):
 
 def table(rows: list[dict], first: str, relational: bool = False) -> str:
     cols = [first, "behaviours", "recall", "alert_recall", "precision", "fa_per_student_hour",
-            "false_alerts_per_student_hour"]
+            "false_alerts_per_student_hour", "clean_alerts_per_student_hour"]
     if relational:
         cols[4:4] = ["pair_recall", "attribution", "reversed"]
     out = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
@@ -137,6 +137,11 @@ def main():
                     per_beh[name] = results
         md.append(f"## Mixed scenario ({args.seeds} sessions x 15 seats x 15 min; one of each behaviour per "
                   "session, other seats untouched)\n\n" + table(rows, "tier", relational=True) + "\n")
+        md.append("**clean_alerts_per_student_hour is the false-alarm number to quote**: alerts on seats that "
+                  "were never given a behaviour. `false_alerts_per_student_hour` also counts later alerts on "
+                  "seats that *were* given one — their risk has not fully decayed, so it overstates the "
+                  "false-alarm rate, and it is not comparable across scenarios with different numbers of "
+                  "injected behaviours (P5 injects 7, P4 injected 5).\n")
         md.append("pair_recall = injected copying/collusion attributed to the correct partner seat; "
                   "attribution = share of relational detections naming the right partner; reversed = copier and "
                   "source swapped.\n")

@@ -27,6 +27,7 @@ class Rule:
     cooldown_s: float | None = None
     end_when: str | None = None          # optional hysteresis: episode lasts until this is true
     same_direction: bool = False         # count only episodes toward the same side (image-left/right)
+    detail_from: str | None = None       # feature whose value fills {detail} in the message (e.g. obj_class)
     cond: object = None
     end_cond: object = None
 
@@ -60,6 +61,7 @@ class _State:
     yaw_dev: list[float] = field(default_factory=list)
     peak: float = 0.0
     ref: float = math.nan   # head direction just before the episode (2-min median)
+    detail: str = ""        # last value of the rule's detail_from feature inside the episode
     episodes: deque = field(default_factory=deque)  # (start, end, mean yaw deviation)
     last_fire: float = -math.inf
 
@@ -97,6 +99,8 @@ class RuleEngine:
                     st.active_since, st.counted, st.yaw_dev, st.peak = t, False, [], 0.0
                     st.ref = ctx["yaw"] - ctx.get("yaw_dev_long", math.nan)
                 st.last_true = t
+                if rule.detail_from:
+                    st.detail = str(ctx.get(rule.detail_from, "") or st.detail)
                 dev = ctx.get("yaw_dev", math.nan)
                 if dev == dev:
                     st.yaw_dev.append(dev)
@@ -137,7 +141,7 @@ class RuleEngine:
         direction = "toward the right (camera view)" if dev > 0 else "toward the left (camera view)"
         duration = (st.last_true - st.active_since) if st.active_since is not None else (eps[-1][1] - eps[-1][0])
         msg = rule.message.format(count=len(eps), window_s=int(rule.window_s), duration=f"{duration:.0f}",
-                                  direction=direction, seat=seat)
+                                  direction=direction, seat=seat, detail=st.detail)
         st.last_fire = t
         st.episodes.clear()
         return Event(rule.id, seat, t, start, t, rule.weight, 1.0, msg, len(eps))
