@@ -109,6 +109,19 @@ def main():
                          "trained at: 1.4 for COCO yolo11n, ~4.0 for models/objects_pc.pt")
     ap.add_argument("--obj-full-frame", action="store_true",
                     help="ablation: detect on the whole frame instead of hand/lap ROIs")
+    ap.add_argument("--evidence", action="store_true",
+                    help="P6: keep a rolling RAM buffer and cut a short face-blurred clip per alert")
+    ap.add_argument("--evidence-seconds", type=float, default=30.0, help="rolling buffer length")
+    ap.add_argument("--evidence-pre", type=float, default=5.0, help="clip seconds before the alert")
+    ap.add_argument("--evidence-post", type=float, default=3.0, help="clip seconds after the alert")
+    ap.add_argument("--evidence-dir", default=str(OUTPUTS / "evidence"))
+    ap.add_argument("--retention-days", type=float, default=30.0,
+                    help="delete clips older than this at startup (spec §13)")
+    ap.add_argument("--evidence-sample-at", type=float, metavar="SECONDS",
+                    help="cut one clip at this session time whether or not an alert fires — to check "
+                         "what evidence clips look like (faces masked, skeleton) before relying on them")
+    ap.add_argument("--no-blur", action="store_true",
+                    help="DEBUG ONLY: write clips with faces visible. Never for anything shared.")
     ap.add_argument("--reason", action="store_true", help="P2: baseline + rules + risk, live")
     ap.add_argument("--calib-seconds", type=float, default=None,
                     help="baseline length (default from reasoner/config.yaml = 180; ~30 for a webcam demo)")
@@ -117,6 +130,7 @@ def main():
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args()
     args.reason = args.reason or args.dashboard
+    args.reason = args.reason or args.evidence   # clips are cut on alerts, so reasoning must run
 
     tracker = PoseTracker(resolve_model(args.model), imgsz=args.imgsz, conf=args.conf)
     detector = obj_tracker = None
@@ -135,6 +149,17 @@ def main():
     OUTPUTS.mkdir(exist_ok=True)
 
     reasoner = store = session_id = live_state = None
+    clip_buffer = recorder = None
+    if args.evidence:
+        from edge.evidence.buffer import ClipBuffer
+        from edge.evidence.clips import ClipRecorder, purge
+        clip_buffer = ClipBuffer(seconds=args.evidence_seconds)
+        recorder = ClipRecorder(clip_buffer, Path(args.evidence_dir), pre_s=args.evidence_pre,
+                                post_s=args.evidence_post, blur=not args.no_blur)
+        old = purge(Path(args.evidence_dir), args.retention_days)
+        print(f"evidence: {args.evidence_seconds:.0f}s RAM buffer -> {args.evidence_dir}"
+              f"{' (BLUR OFF - debug)' if args.no_blur else ', faces masked'}"
+              f"{f', {len(old)} expired clips deleted' if old else ''}")
     feed: list[str] = []  # latest events/alerts shown on screen
 
     def start_reasoner(sm: SeatMap):
@@ -175,6 +200,8 @@ def main():
         t0 = time.perf_counter()
         t_now = (t0 - t_start) if live else n / src_fps
         people = tracker(frame)
+        if clip_buffer is not None:
+            clip_buffer.add(t_now, frame, people)   # clean frame + keypoints; overlays come later
         if detector is not None and n % max(args.obj_every, 1) == 0:
             # between detector frames the previous boxes are reused (they are < 0.5 s old)
             objects = detector.full_frame(frame) if args.obj_full_frame else detector(frame, people)
@@ -270,8 +297,21 @@ def main():
                     store.add_alert(session_id, a)
                     feed.append(f"[{t_now:5.0f}s] {a.seat} -> {a.level.upper()} (risk {a.risk:.2f})")
                     print(f"ALERT  t={t_now:.0f}s {a.seat} {a.level.upper()} risk={a.risk:.2f} reasons={a.reasons}")
+                    if recorder is not None:
+                        recorder.request(t_now, a.seat, a.id, a.reasons[0] if a.reasons else "")
                 if out.events or out.alerts:
                     store.commit()
+                if recorder is not None:
+                    if args.evidence_sample_at is not None and t_now >= args.evidence_sample_at:
+                        if recorder.request(t_now, next(iter(seats), "sample"), caption="sample clip"):
+                            print(f"CLIP   t={t_now:.0f}s sample clip requested")
+                        args.evidence_sample_at = None
+                    for clip in recorder.pump(t_now):
+                        store.add_clip(session_id, clip)
+                        if live_state is not None:
+                            live_state.attach_clip(clip.alert_id, clip.id, clip.duration)
+                        print(f"CLIP   t={t_now:.0f}s {clip.seat} {clip.frames} frames, "
+                              f"{clip.faces_masked} faces masked -> {clip.path.name}")
                 left = (reasoner.baseline.calib_s - (t_now - reasoner.baseline.start_t)
                         if reasoner.baseline.start_t is not None else reasoner.baseline.calib_s)
                 status += f"  |  {'baseline: sit normally ' + str(int(left)) + 's' if left > 0 else 'monitoring'}"
@@ -301,6 +341,12 @@ def main():
         if args.max_frames and n >= args.max_frames:
             break
 
+    if recorder is not None:
+        for clip in recorder.flush(t_now):
+            store.add_clip(session_id, clip)
+            print(f"CLIP   {clip.seat} {clip.frames} frames, {clip.faces_masked} faces masked -> {clip.path.name}")
+        print(f"evidence: {len(recorder.clips)} clip(s) in {args.evidence_dir}; "
+              f"RAM buffer held {clip_buffer.memory_mb:.0f} MB")
     cap.release()
     if writer:
         writer.release()

@@ -130,6 +130,33 @@ names both seats and is drawn as a dashed red arrow on the dashboard map.
 Object detection costs one nano forward pass per ROI, so it runs every `--obj-every` frames
 (default 3 → 3–5 fps, as the spec wants) while pose keeps its own rate.
 
+## P6 — Evidence clips + privacy
+
+```powershell
+# live, with evidence capture: a short face-masked clip is cut for every alert
+python scripts\run_seats.py --source 0 --auto-seats 30 --evidence --dashboard --calib-seconds 30
+
+# see what a clip looks like before trusting it with real footage (cuts one, alert or not)
+python scripts\run_seats.py --source clip.mp4 --auto-seats 30 --evidence --evidence-sample-at 10
+
+# retention: delete clips past the window (schedule it, or it runs once at --evidence startup)
+python scripts\retention.py --days 30 --dry-run
+python scripts\retention.py --days 0 --yes          # end of exam: delete everything
+```
+
+Raw video is held **only in RAM** — a rolling 30 s buffer (`--evidence-seconds`), JPEG-encoded,
+~20 MB. Nothing reaches the disk until an alert asks for a clip, and what is written has already
+been through the privacy filter: every face in the frame is **mosaiced** (not Gaussian-blurred — a
+blur is invertible, block averaging is not), with the face region taken from the pose keypoints,
+since SAGA never detects or recognises faces. The skeleton is drawn on top, and playback speed is
+taken from the real capture rate so the clip does not misrepresent how long a behaviour lasted.
+
+Alerts fire mid-behaviour, so the cutter waits for the post-roll and cuts afterwards
+(`--evidence-pre` 5 s, `--evidence-post` 3 s). Clips are listed in the `evidence_clip` table, served
+only through `/api/clips/{id}`, and **every view is written to the `clip_view` audit table**.
+Deleted clips stop being served. `--no-blur` exists for local debugging and should never be used for
+anything that leaves the machine.
+
 Tests: `python -m pytest -q`
 
 ## Layout
@@ -142,6 +169,8 @@ edge/perception/                pose_tracker.py (YOLO pose + BoT-SORT), botsort.
                                 objects.py (hand/lap-ROI detector + object tracker),
                                 interaction.py (hand-object features per seat)
 edge/calibration/               seatmap.py (grid homography / auto seats), seat_lock.py
+edge/evidence/                  buffer.py (rolling RAM frames), privacy.py (keypoint face mosaic),
+                                clips.py (deferred cutter + retention)
 edge/viz.py                     overlay drawing
 reasoner/                       baseline.py (per-seat median/MAD, rolling recent direction),
                                 rules/ (safe YAML rule engine), sag.py (Seat Attention Graph),
@@ -152,7 +181,8 @@ ml/datasets/                    cctv_exam.py (D1 loader), objects.py (YOLO expor
 ml/injection/                   session.py (real CSV / synthetic class), inject.py (behaviours + ground truth),
                                 bootstrap.py (real-track bootstrap, real detector jitter)
 ml/eval/                        d1_posture.py, injection_eval.py (recall, FA/student-hour, sweeps)
-scripts/                        inspect_d1, run_pose, calibrate, run_seats, eval_d1, replay, simulate, dashboard
+scripts/                        inspect_d1, run_pose, calibrate, run_seats, eval_d1, replay, simulate,
+                                dashboard, train_objects, eval_objects, retention
 tests/                          core regression tests (pytest)
 models/  outputs/               weights / generated files (gitignored)
 ```

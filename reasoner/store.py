@@ -21,11 +21,19 @@ CREATE TABLE IF NOT EXISTS behaviour_event (
 CREATE TABLE IF NOT EXISTS alert (
     id TEXT PRIMARY KEY, session_id TEXT REFERENCES exam_session(id), seat TEXT, level TEXT,
     risk REAL, observability REAL, t REAL, reasons TEXT, related TEXT);
+CREATE TABLE IF NOT EXISTS evidence_clip (
+    id TEXT PRIMARY KEY, session_id TEXT REFERENCES exam_session(id), alert_id TEXT REFERENCES alert(id),
+    seat TEXT, path TEXT, start_t REAL, end_t REAL, frames INTEGER, faces_masked INTEGER,
+    created_at REAL, deleted_at REAL);
+CREATE TABLE IF NOT EXISTS clip_view (
+    id TEXT PRIMARY KEY, clip_id TEXT REFERENCES evidence_clip(id), viewer TEXT, viewed_at REAL);
 CREATE TABLE IF NOT EXISTS feedback (
     id TEXT PRIMARY KEY, alert_id TEXT REFERENCES alert(id), verdict TEXT, note TEXT, created_at REAL);
 CREATE INDEX IF NOT EXISTS ix_event_session ON behaviour_event(session_id, seat);
 CREATE INDEX IF NOT EXISTS ix_alert_session ON alert(session_id, seat);
 CREATE INDEX IF NOT EXISTS ix_feedback_alert ON feedback(alert_id);
+CREATE INDEX IF NOT EXISTS ix_clip_alert ON evidence_clip(alert_id);
+CREATE INDEX IF NOT EXISTS ix_clipview_clip ON clip_view(clip_id);
 """
 VERDICTS = {"confirm", "dismiss", "unsure"}
 
@@ -62,6 +70,56 @@ class Store:
                             "related) VALUES (?,?,?,?,?,?,?,?,?)",
                             (a.id, sid, a.seat, a.level, a.risk, a.observability, a.t, json.dumps(a.reasons),
                              json.dumps(getattr(a, "related", []))))
+
+    def add_clip(self, sid: str, clip) -> str:
+        """Record an evidence clip (spec §11.2 EVIDENCE_CLIP). Only the path is stored — the file
+        itself lives under outputs/evidence/ and is deleted by the retention job."""
+        with self.lock:
+            self.db.execute("INSERT INTO evidence_clip (id, session_id, alert_id, seat, path, start_t, "
+                            "end_t, frames, faces_masked, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (clip.id, sid, clip.alert_id, clip.seat, str(clip.path), clip.start_t,
+                             clip.end_t, clip.frames, clip.faces_masked, clip.created_at))
+            self.db.commit()
+        return clip.id
+
+    def clip_for_alert(self, alert_id: str) -> dict | None:
+        with self.lock:
+            row = self.db.execute("SELECT id, path, seat, start_t, end_t, frames FROM evidence_clip "
+                                  "WHERE alert_id = ? AND deleted_at IS NULL ORDER BY created_at DESC "
+                                  "LIMIT 1", (alert_id,)).fetchone()
+        keys = ("id", "path", "seat", "start_t", "end_t", "frames")
+        return dict(zip(keys, row)) if row else None
+
+    def clip_by_id(self, clip_id: str) -> dict | None:
+        with self.lock:
+            row = self.db.execute("SELECT id, path, seat, alert_id, start_t, end_t FROM evidence_clip "
+                                  "WHERE id = ? AND deleted_at IS NULL", (clip_id,)).fetchone()
+        keys = ("id", "path", "seat", "alert_id", "start_t", "end_t")
+        return dict(zip(keys, row)) if row else None
+
+    def clip_views(self, clip_id: str) -> list[dict]:
+        with self.lock:
+            rows = self.db.execute("SELECT viewer, viewed_at FROM clip_view WHERE clip_id = ? "
+                                   "ORDER BY viewed_at", (clip_id,)).fetchall()
+        return [{"viewer": v, "at": t} for v, t in rows]
+
+    def log_clip_view(self, clip_id: str, viewer: str = "invigilator") -> str:
+        """Audit log on every clip view (spec §13 access control)."""
+        vid = uuid.uuid4().hex
+        with self.lock:
+            self.db.execute("INSERT INTO clip_view VALUES (?,?,?,?)", (vid, clip_id, viewer[:100], time.time()))
+            self.db.commit()
+        return vid
+
+    def mark_clips_deleted(self, paths: list[str]) -> int:
+        if not paths:
+            return 0
+        q = ",".join("?" * len(paths))
+        with self.lock:
+            cur = self.db.execute(f"UPDATE evidence_clip SET deleted_at = ? WHERE path IN ({q})",
+                                  [time.time(), *paths])
+            self.db.commit()
+        return cur.rowcount
 
     def add_feedback(self, alert_id: str, verdict: str, note: str = "") -> str:
         if verdict not in VERDICTS:

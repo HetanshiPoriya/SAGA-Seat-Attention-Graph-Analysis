@@ -48,6 +48,7 @@
            padding: 5px 10px; border-radius: 8px; cursor: pointer; }
   button:hover { border-color: var(--accent); }
   .verdict { font-size: 12.5px; color: var(--muted); }
+  .clip { width: 100%; max-height: 220px; border-radius: 8px; background: #000; margin-bottom: 6px; }
   .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); margin-right: 4px;
           cursor: pointer; font-size: 12.5px; }
   .empty { color: var(--muted); padding: 8px 0; }
@@ -180,6 +181,8 @@ function drawAlerts() {
         <span class="muted">${fmtT(a.t)} · risk ${a.risk.toFixed(2)} · visibility ${(a.obs ?? 0).toFixed(2)}</span></div>
       <ul>${a.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
       ${a.related.length ? `<div style="margin-bottom:8px">Related seats: ${a.related.map(r => `<span class="chip" data-seat="${esc(r)}">${esc(r)}</span>`).join("")}</div>` : ""}
+      ${a.clip ? `<video class="clip" src="${esc(a.clip.url)}" controls preload="none" playsinline></video>
+        <div class="muted" style="margin:-4px 0 8px">${a.clip.duration}s · faces masked · skeleton overlay · viewing is logged</div>` : ""}
       ${a.verdict ? `<div class="verdict">Your feedback: <b>${esc(a.verdict)}</b></div>` : `
       <div class="btns">
         <button data-id="${a.id}" data-v="confirm">Confirm</button>

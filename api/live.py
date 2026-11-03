@@ -80,7 +80,8 @@ class LiveState:
                 for a in out.alerts:
                     self.alerts.appendleft({"id": a.id, "seat": a.seat, "level": a.level, "risk": a.risk,
                                             "obs": a.observability, "t": round(a.t, 1), "reasons": a.reasons,
-                                            "related": a.related, "verdict": None, "wall": time.time()})
+                                            "related": a.related, "verdict": None, "wall": time.time(),
+                                            "clip": None})
             self.health = {"fps": _num(fps, 1), "frames": self.health["frames"] + 1, "people": people,
                            "t": round(t, 1), "updated": time.time()}
             self.version += 1
@@ -105,6 +106,18 @@ class LiveState:
             events = [e for e in self.events if e["seat"] == seat or seat in e["related"]]
         return {"seat": seat, "t": [x[0] for x in tl], "yaw": [x[1] for x in tl], "pitch": [x[2] for x in tl],
                 "risk": [x[3] for x in tl], "baseline": band, "events": events}
+
+    def attach_clip(self, alert_id: str | None, clip_id: str, duration: float) -> bool:
+        """An evidence clip finished cutting for this alert (P6); the card can now show a player."""
+        if alert_id is None:
+            return False
+        with self.lock:
+            hit = next((a for a in self.alerts if a["id"] == alert_id), None)
+            if hit is None:
+                return False
+            hit["clip"] = {"id": clip_id, "url": f"/api/clips/{clip_id}", "duration": round(duration, 1)}
+            self.version += 1
+        return True
 
     def feedback(self, alert_id: str, verdict: str, note: str = "") -> bool:
         with self.lock:

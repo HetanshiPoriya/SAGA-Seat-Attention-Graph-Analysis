@@ -9,7 +9,7 @@ import asyncio
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,23 @@ def create_app(state: LiveState) -> FastAPI:
         if not state.feedback(alert_id, body.verdict, body.note):
             raise HTTPException(404, "unknown alert")
         return {"ok": True}
+
+    @app.get("/api/clips/{clip_id}")
+    def get_clip(clip_id: str, request: Request):
+        """Serve an evidence clip. Every view is written to the audit log (spec §13)."""
+        if state.store is None:
+            raise HTTPException(404, "no clip store")
+        row = state.store.clip_by_id(clip_id)
+        if row is None or not Path(row["path"]).exists():
+            raise HTTPException(404, "unknown clip")
+        state.store.log_clip_view(clip_id, viewer=request.client.host if request.client else "unknown")
+        return FileResponse(row["path"], media_type="video/mp4", filename=Path(row["path"]).name)
+
+    @app.get("/api/clips/{clip_id}/views")
+    def get_clip_views(clip_id: str):
+        if state.store is None:
+            raise HTTPException(404, "no clip store")
+        return {"clip": clip_id, "views": state.store.clip_views(clip_id)}
 
     @app.get("/api/seats/{seat}/timeline")
     def get_timeline(seat: str):
