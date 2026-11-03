@@ -104,6 +104,9 @@ def main():
     ap.add_argument("--obj-imgsz", type=int, default=320)
     ap.add_argument("--obj-conf", type=float, default=0.30)
     ap.add_argument("--obj-every", type=int, default=3, help="run the object detector every N frames (spec: 3-5 fps)")
+    ap.add_argument("--obj-roi-k", type=float, default=1.4,
+                    help="hand ROI width in shoulder widths. MUST match the scale the detector was "
+                         "trained at: 1.4 for COCO yolo11n, ~4.0 for models/objects_pc.pt")
     ap.add_argument("--obj-full-frame", action="store_true",
                     help="ablation: detect on the whole frame instead of hand/lap ROIs")
     ap.add_argument("--reason", action="store_true", help="P2: baseline + rules + risk, live")
@@ -120,7 +123,8 @@ def main():
     objects: list = []
     if args.objects:
         from edge.perception.objects import ObjectDetector
-        detector = ObjectDetector(resolve_model(args.obj_model), imgsz=args.obj_imgsz, conf=args.obj_conf)
+        detector = ObjectDetector(resolve_model(args.obj_model), imgsz=args.obj_imgsz,
+                                  conf=args.obj_conf, wrist_k=args.obj_roi_k)
         obj_tracker = ObjectTracker()
         print(f"objects: {args.obj_model} -> classes {sorted(set(detector.map.values())) or '(none mapped!)'}"
               f"{' (full frame)' if args.obj_full_frame else ' on hand/lap ROIs'}")

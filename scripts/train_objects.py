@@ -36,10 +36,18 @@ def main():
     ap.add_argument("--classes", nargs="*", help="limit to these SAGA classes (default: all that map)")
     ap.add_argument("--out", default=str(MODELS / "objects.pt"))
     ap.add_argument("--name", default="objects")
+    ap.add_argument("--prepared", help="where to write the remapped dataset (default: next to --data)")
     ap.add_argument("--prepare-only", action="store_true")
     args = ap.parse_args()
 
-    data_yaml = prepare(args.data, classes=args.classes)
+    # A class subset produces different labels, so it needs its own folder — otherwise the next run
+    # silently trains on the previous run's label files.
+    out_dir = args.prepared
+    if out_dir is None and args.classes:
+        first = Path(args.data[0])
+        stem = first.name if len(args.data) == 1 else "objects_merged"
+        out_dir = first.parent / f"{stem}_saga_{'-'.join(args.classes)}"
+    data_yaml = prepare(args.data, out=out_dir, classes=args.classes)
     if args.prepare_only:
         return
     from ultralytics import YOLO

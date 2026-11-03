@@ -85,7 +85,7 @@ def count_only(args):
     random.Random(0).shuffle(images)
     images = images[:args.limit]
     pose = PoseTracker(resolve_model(args.pose_model), imgsz=args.pose_imgsz)
-    roi = ObjectDetector(resolve_model(args.model), imgsz=args.imgsz, conf=args.conf)
+    roi = ObjectDetector(resolve_model(args.model), imgsz=args.imgsz, conf=args.conf, wrist_k=args.roi_k)
     full = ObjectDetector(resolve_model(args.model), imgsz=args.full_imgsz or args.imgsz, conf=args.conf)
     counts = {"hand ROI": {}, "full frame": {}}
     secs = {"hand ROI": 0.0, "full frame": 0.0, "pose": 0.0}
@@ -137,11 +137,15 @@ def main():
     ap.add_argument("--imgsz", type=int, default=320)
     ap.add_argument("--pose-imgsz", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.30)
+    ap.add_argument("--conf-sweep", type=float, nargs="*", metavar="T",
+                    help="also report precision/recall at each of these thresholds")
     ap.add_argument("--limit", type=int, default=300, help="images to evaluate (CPU: keep it small)")
     ap.add_argument("--out", default=str(OUTPUTS / "objects_eval"))
     ap.add_argument("--count-only", action="store_true",
                     help="no object labels available: just count what each mode finds, and time it. "
                          "--data is then a folder of images (searched recursively).")
+    ap.add_argument("--roi-k", type=float, default=1.4,
+                    help="hand ROI width in shoulder widths (match the detector's training scale)")
     ap.add_argument("--full-imgsz", type=int, default=0,
                     help="imgsz for the full-frame baseline (default: same as --imgsz; use ~960 for equal cost)")
     args = ap.parse_args()
@@ -152,17 +156,24 @@ def main():
     cfg = yaml.safe_load(Path(data_yaml).read_text(encoding="utf-8"))
     names = [cfg["names"][i] for i in sorted(cfg["names"])]
     img_dir = Path(cfg[args.split])
-    lab_dir = Path(cfg["path"]) / "labels" / args.split
+    lab_dir = img_dir.parent / "labels"      # <split>/images and <split>/labels sit side by side
+    if not lab_dir.is_dir():
+        sys.exit(f"no labels next to {img_dir} (expected {lab_dir})")
     images = sorted(p for p in img_dir.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png"))[:args.limit]
     if not images:
         sys.exit(f"no images in {img_dir}")
+    if not any((lab_dir / f"{p.stem}.txt").exists() for p in images):
+        sys.exit(f"no label file matches the images in {img_dir} — check {lab_dir}")
 
-    det = ObjectDetector(resolve_model(args.model), imgsz=args.imgsz, conf=args.conf)
+    det = ObjectDetector(resolve_model(args.model), imgsz=args.imgsz, conf=args.conf, wrist_k=args.roi_k)
     pose = PoseTracker(resolve_model(args.pose_model), imgsz=args.pose_imgsz)
     print(f"{len(images)} images · classes {names} · detector classes {sorted(set(det.map.values()))}")
 
-    stats = {m: (defaultdict(int), defaultdict(int), defaultdict(int)) for m in ("full frame", "hand ROI")}
-    sizes, no_person = [], 0
+    # Detect once at the lowest threshold, then score at each. Confidence calibration differs wildly
+    # between a fine-tune and COCO weights, so the operating threshold has to be chosen, not assumed.
+    thresholds = sorted(args.conf_sweep) if args.conf_sweep else [args.conf]
+    det.conf = min(thresholds)
+    sizes, no_person, per_image = [], 0, []
     for i, path in enumerate(images):
         img = cv2.imread(str(path))
         if img is None:
@@ -173,13 +184,21 @@ def main():
         sizes += [float(min(b[2] - b[0], b[3] - b[1])) for _, b in gt]
         people = pose.detect(img)
         no_person += not people
-        for mode, dets in (("full frame", det.full_frame(img)), ("hand ROI", det(img, people))):
-            t, f, n = match(gt, dets)
-            for acc, cur in zip(stats[mode], (t, f, n)):
-                for k, v in cur.items():
-                    acc[k] += v
+        per_image.append((gt, det.full_frame(img), det(img, people)))
         if (i + 1) % 25 == 0:
             print(f"  {i + 1}/{len(images)}")
+
+    def score(thr: float):
+        st = {m: (defaultdict(int), defaultdict(int), defaultdict(int)) for m in ("full frame", "hand ROI")}
+        for gt, full, roi in per_image:
+            for mode, dets in (("full frame", full), ("hand ROI", roi)):
+                t, f, n = match(gt, [d for d in dets if d.conf >= thr])
+                for acc, cur in zip(st[mode], (t, f, n)):
+                    for k, v in cur.items():
+                        acc[k] += v
+        return st
+
+    stats = score(thresholds[-1] if len(thresholds) == 1 else max(thresholds))
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -198,6 +217,19 @@ def main():
                 t, f_, n = tp[c], fp[c], fn[c]
             p, r, f1 = prf(t, f_, n)
             md.append(f"| {mode} | {c} | {t} | {f_} | {n} | {p:.3f} | {r:.3f} | {f1:.3f} |")
+    if len(thresholds) > 1:
+        md += ["\n## Operating threshold\n",
+               "| conf | mode | class | precision | recall | F1 |", "|---|---|---|---|---|---|"]
+        for thr in thresholds:
+            st = score(thr)
+            for mode, (tp, fp, fn) in st.items():
+                for c in sorted(set(tp) | set(fp) | set(fn)) + ["ALL"]:
+                    if c == "ALL":
+                        t, f_, n = sum(tp.values()), sum(fp.values()), sum(fn.values())
+                    else:
+                        t, f_, n = tp[c], fp[c], fn[c]
+                    p, r, f1 = prf(t, f_, n)
+                    md.append(f"| {thr} | {mode} | {c} | {p:.3f} | {r:.3f} | {f1:.3f} |")
     (out / "report.md").write_text("\n".join(md), encoding="utf-8")
     print("\n".join(md))
     print(f"\nreport -> {out / 'report.md'}")

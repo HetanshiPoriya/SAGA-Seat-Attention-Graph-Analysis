@@ -13,8 +13,8 @@ the new data.yaml points at the original image folders, which stay outside the r
 """
 from __future__ import annotations
 
+import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import yaml
@@ -70,22 +70,49 @@ def _prepare_many(roots: list[Path], out: str | Path | None, classes: list[str] 
 
 
 def _link_images(src: Path, dst: Path) -> Path:
-    """Point `dst` at the original image folder without copying it. A symlink needs developer mode
-    on Windows, a directory junction does not; copying is the last resort."""
-    if dst.exists():
-        return dst
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        dst.symlink_to(src, target_is_directory=True)
-        return dst
-    except OSError:
-        pass
-    if subprocess.run(["cmd", "/c", "mklink", "/J", str(dst), str(src)],
-                      capture_output=True).returncode == 0:
-        return dst
-    print(f"  no symlink or junction possible — copying {src.name} images into {dst} (one-off)")
-    shutil.copytree(src, dst)
+    """Mirror the image folder next to our remapped labels, one HARD LINK per file (no extra disk).
+
+    Not a directory junction or symlink: Ultralytics resolves the image directory before deriving
+    the label paths from it, so a linked *directory* sends it straight back to the original labels —
+    i.e. it trains on the source dataset's class order while believing ours. That bug is silent and
+    cost us a full training run. A hard link is a real directory entry, so resolving it stays here.
+    """
+    real = [p for p in dst.iterdir() if p.is_file()] if dst.is_dir() else []
+    want = [p for p in src.iterdir() if p.is_file()]
+    if len(real) == len(want):
+        return dst                       # already mirrored
+    if dst.exists() and not dst.is_dir():
+        dst.unlink()
+    dst.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for p in want:
+        q = dst / p.name
+        if q.exists():
+            continue
+        try:
+            os.link(p, q)                # NTFS hard link: no copy, no admin rights
+        except OSError:
+            shutil.copy2(p, q)
+            copied += 1
+    if copied:
+        print(f"  {copied} images copied (hard links unavailable) -> {dst}")
     return dst
+
+
+def verify_layout(data_yaml: Path) -> None:
+    """Fail loudly if the trainer would read label files other than ours (see _link_images)."""
+    cfg = yaml.safe_load(Path(data_yaml).read_text(encoding="utf-8"))
+    for split in ("train", "val", "test"):
+        for img_dir in ([cfg[split]] if isinstance(cfg.get(split), str) else cfg.get(split) or []):
+            img = next((p for p in Path(img_dir).iterdir() if p.is_file()), None)
+            if img is None:
+                continue
+            labels = Path(str(img.resolve()).replace(f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}"))
+            expected = Path(img_dir).parent / "labels" / f"{img.stem}.txt"
+            if labels.with_suffix(".txt") != expected:
+                raise RuntimeError(
+                    f"{split}: the trainer would read {labels.with_suffix('.txt')} but our remapped "
+                    f"labels are at {expected} — class indices would be wrong")
 
 
 def _names(data: dict) -> list[str]:
@@ -147,5 +174,6 @@ def prepare(roots, out: str | Path | None = None, classes: list[str] | None = No
 
     cfg = {"path": str(out), "names": {i: c for i, c in enumerate(keep)}, **splits}
     (out / "data.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    verify_layout(out / "data.yaml")
     print(f"{written} label files -> {out} | classes {keep} | {dropped} boxes of unmapped classes dropped")
     return out / "data.yaml"

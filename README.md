@@ -94,15 +94,28 @@ real detector jitter, real-track bootstrap stress test; with vs without SAG).
 # live, with hand/lap-ROI object detection (COCO weights: phone, book, bottle)
 python scripts\run_seats.py --source 0 --auto-seats 30 --objects --reason --calib-seconds 30
 
-# with a fine-tuned detector (adds chit / earphone / smartwatch — needs a labelled set, see below)
-python scripts\run_seats.py --source 0 --auto-seats 30 --objects --obj-model models\objects.pt --dashboard
+# with the fine-tuned detector (adds chit = paper note). Trained on close-ups, so it needs a WIDER
+# hand ROI than COCO — or run it on the whole frame, which scored better on the labelled test split:
+python scripts\run_seats.py --source 0 --auto-seats 30 --objects --obj-model models\objects_pc.pt ^
+                            --obj-roi-k 4.0 --obj-conf 0.2 --dashboard
 
-# train that detector from a Roboflow YOLO export, then measure it
-python scripts\train_objects.py --data C:\SAGA_data\exam_objects --epochs 50 --imgsz 320
-python scripts\eval_objects.py  --data C:\SAGA_data\exam_objects --model models\objects.pt
-python scripts\eval_objects.py  --count-only --data C:\SAGA_data\smart_invigilator\valid\images \
-                                --imgsz 320 --full-imgsz 960      # ROI vs full frame, no labels needed
+# train that detector from one or more Roboflow YOLO exports (merged under one class list)
+python scripts\train_objects.py --data C:\SAGA_data\exam_objects --classes phone chit --epochs 18 --imgsz 320
+python scripts\train_objects.py --data C:\SAGA_data\exam_objects C:\SAGA_data\exam_cheating --epochs 30
+
+# measure it: precision/recall per class, hand-ROI vs full frame, at several thresholds
+python scripts\eval_objects.py  --data C:\SAGA_data\exam_objects --split test --model models\objects_pc.pt ^
+                                --roi-k 4.0 --conf-sweep 0.1 0.25 0.4
+python scripts\eval_objects.py  --count-only --data C:\SAGA_data\smart_invigilator\valid\images  # no labels
 ```
+
+**Detector scale matters more than it looks.** `--obj-roi-k` (hand ROI width in shoulder widths) has to
+match the scale the weights were trained at: 1.4 for COCO `yolo11n.pt`, ~4.0 for `models\objects_pc.pt`
+(trained on close-ups where objects fill ~4% of the frame). At 1.4 the fine-tuned model detects
+*nothing* — the object is 3× larger in the crop than anything it saw. Measured results are in
+`outputs\objects_eval*\`; on our only labelled set, **full-frame beat hand-ROI** (F1 0.74 vs 0.41),
+so the hand-ROI idea from spec §6.6 is currently unproven — it was designed for wide hall cameras,
+which we have no labelled data for.
 
 Objects are detected **inside wrist and lap ROIs** taken from the pose keypoints
 ([edge/perception/objects.py](edge/perception/objects.py)), not in the whole frame, so a phone that
