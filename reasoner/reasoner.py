@@ -13,6 +13,7 @@ from reasoner.baseline import BaselineModel
 from reasoner.risk import Alert, RiskScorer, observability
 from reasoner.rules.engine import Event, RuleEngine, load_rules
 from reasoner.sag import SeatAttentionGraph
+from reasoner.temporal import TemporalLayer
 from reasoner.transfer import TransferDetector
 
 HERE = Path(__file__).resolve().parent
@@ -39,10 +40,13 @@ class StepResult:
 
 class Reasoner:
     def __init__(self, config: str | Path = HERE / "config.yaml", calib_s: float | None = None,
-                 rules_file: str | Path | None = None, seat_positions: dict | None = None):
+                 rules_file: str | Path | None = None, seat_positions: dict | None = None,
+                 overrides: dict | None = None):
         """seat_positions: seat -> (x, y) for the Seat Attention Graph (plan coords for a clicked grid,
         image centres for auto seats). Without it the relational (SAG) layer is off."""
         cfg = yaml.safe_load(Path(config).read_text(encoding="utf-8"))
+        for section, values in (overrides or {}).items():   # e.g. {"temporal": {"enabled": True}}
+            cfg[section] = {**(cfg.get(section) or {}), **values} if isinstance(values, dict) else values
         b = cfg["baseline"]
         if calib_s is not None:
             b["calib_s"] = calib_s
@@ -53,6 +57,8 @@ class Reasoner:
         self.risk = RiskScorer(**cfg["risk"])
         self.sag = SeatAttentionGraph(seat_positions, cfg.get("sag")) if seat_positions else None
         self.transfer = TransferDetector(seat_positions, cfg.get("transfer"))
+        tcfg = dict(cfg.get("temporal") or {})
+        self.temporal = TemporalLayer(tcfg.pop("model", None), tcfg)
         self.pending: dict[str, list[Event]] = defaultdict(list)  # SAG events waiting for that seat's row
         self.despike_s = cfg.get("despike_s", 1.0)
         self.recent_angles: dict[str, deque] = defaultdict(deque)
@@ -68,6 +74,7 @@ class Reasoner:
             if not b.frozen:
                 continue
             ctx = self.baseline.context(b, row)
+            self.temporal.observe(t, row["seat"], ctx)   # P7: 2 s window of this seat
             self.pending[row["seat"]] += self.rules.update(t, row["seat"], ctx)
             if self.sag:
                 for seat, e in self.sag.observe(t, row["seat"], ctx, observability(row)):
@@ -80,6 +87,10 @@ class Reasoner:
             if any(e.rule_id in RELATIONAL_GLANCE for e in events):
                 # the SAG event explains the same glances, with the neighbour named: keep only it
                 events = [e for e in events if e.rule_id != "SIDE_GLANCE_REPEAT"]
+            events = self.temporal.apply(row["seat"], events)   # P7: strengthen or damp, never create
+            note = self.temporal.note(t, row["seat"])           # weight 0: a review note, not an alert
+            if note is not None:
+                events = events + [note]
             alert = self.risk.update(t, row["seat"], row, events)
             out.events += events
             if alert:

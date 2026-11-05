@@ -51,6 +51,16 @@ transfer:                     # object passed from one seat's hand to a neighbou
   cooldown_s: 120
   weight: 0.70
 
+temporal:                     # P7 learned layer (spec §9.3). NEVER alerts on its own: it only
+  enabled: false              # scales the weight of events the rules already produced.
+  model: models/temporal.pt   # trained by scripts/train_temporal.py on NORMAL behaviour only
+  damp: 0.55                  # x weight when the 2 s window looks ordinary for this student
+  boost: 1.25                 # x weight when it is more surprising than 99% of normal
+  low: 0.35                   # surprise <= this = ordinary
+  high: 1.0                   # surprise >= this = unusual (1.0 is the normal 99th percentile)
+  note_surprise: 1.6          # above this, log "unusual pattern, review" (weight 0, no risk)
+  note_cooldown_s: 300
+
 despike_s: 1.0              # causal median on head angles: removes keypoint glitches (real jitter: 9.8 -> 0.75 false alerts/student-h)
 
 rules_file: rules/rules.yaml

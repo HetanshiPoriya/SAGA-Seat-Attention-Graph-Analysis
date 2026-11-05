@@ -39,17 +39,22 @@ class RunResult:
     clean_events: list = field(default_factory=list)   # on seats with NO injected behaviour at all
     clean_alerts: list = field(default_factory=list)
     clean_seats: int = 0
+    temporal_counts: dict = field(default_factory=dict)
 
 
-def run(sess: Session, gt: list[dict], calib_s: float, rules_file=None, sag=True) -> RunResult:
+def run(sess: Session, gt: list[dict], calib_s: float, rules_file=None, sag=True,
+        temporal: str | None = None) -> RunResult:
+    """temporal: path to a trained model to switch the P7 layer on (None = rules only)."""
     positions = {s: sess.pos[s] for s in sess.seats} if sag else None
-    r = Reasoner(calib_s=calib_s, rules_file=rules_file, seat_positions=positions)
+    overrides = {"temporal": {"enabled": True, "model": temporal}} if temporal else None
+    r = Reasoner(calib_s=calib_s, rules_file=rules_file, seat_positions=positions, overrides=overrides)
     events, alerts = [], []
     for t, rows in sess.to_frames():
         out = r.step(t, rows)
         events += out.events
         alerts += out.alerts
     res = RunResult(gt, events, alerts, calib_s, sess.duration, len(sess.seats))
+    res.temporal_counts = dict(r.temporal.counts)
     for g in gt:
         def in_win(e):
             return g["start"] <= e.t <= g["end"] + TOL_S
